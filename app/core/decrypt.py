@@ -62,10 +62,22 @@ def decrypt_database(db_path, out_path, enc_key):
     return True
 
 
-def decrypt_all(db_dir, out_dir, keys, progress=None, skip_fresh=True):
-    """keys: {rel: {enc_key, salt}} -> {ok, failed, total, results}"""
+# 聊天导出所需的数据库（跳过 sns / favorite / fts 等无关库）
+CORE_DB_RELS = ['session/session.db', 'contact/contact.db']
+CHAT_DB_RELS = CORE_DB_RELS + ['message/message_0.db', 'message/media_0.db']
+
+
+def decrypt_all(db_dir, out_dir, keys, progress=None, skip_fresh=True,
+                only_rels=None):
+    """keys: {rel: {enc_key, salt}} -> {ok, failed, total, results}
+
+    only_rels 非空时只解密指定相对路径的数据库。
+    """
     results = []
     items = sorted(keys.items())
+    if only_rels is not None:
+        wanted = set(only_rels)
+        items = [(rel, info) for rel, info in items if rel in wanted]
     total = len(items)
     ok = failed = skipped = 0
     for i, (rel, info) in enumerate(items, 1):

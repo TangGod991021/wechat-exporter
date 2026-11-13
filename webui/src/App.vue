@@ -58,8 +58,8 @@ const account = computed<any>(() => accounts.value.find((a) => a.folder === sele
 
 const jobs = reactive<Record<string, any>>({
   keys: { progress: 0, status: '', message: '', logs: [] },
-  decrypt: { progress: 0, status: '', message: '', logs: [] },
-  media: { progress: 0, status: '', message: '', logs: [] },
+  core: { progress: 0, status: '', message: '', logs: [] },
+  prepare: { progress: 0, status: '', message: '', logs: [] },
   export: { progress: 0, status: '', message: '', logs: [] },
 })
 const activeJob = ref('')
@@ -81,7 +81,15 @@ async function loadBoot() {
   }
 }
 
+function resetSelection() {
+  sessionsLoaded.value = false
+  sessions.value = []
+  picked.value = []
+  preparedSig.value = ''
+}
+
 function selectAccount(a: any) {
+  if (a.folder !== selected.value) resetSelection()
   selected.value = a.folder
   api.setConfig({ last_account: a.folder }).catch(() => {})
 }
@@ -90,6 +98,7 @@ async function pickDir() {
   const r = await api.pickFolder()
   if (r.path) {
     await api.setConfig({ wechat_root: r.path })
+    resetSelection()
     await loadBoot()
     message.success('数据目录已更新')
   }
@@ -116,46 +125,39 @@ async function runJob(kind: string, starter: () => Promise<any>) {
 function doKeys() {
   return runJob('keys', () => api.startKeys(account.value.folder))
 }
-function doDecrypt() {
-  return runJob('decrypt', () => api.startDecrypt(account.value.folder))
-}
-const perfMode = ref<'auto' | 'low'>('auto')
-const perfOptions = [
-  { label: '性能模式 · 自动', value: 'auto' },
-  { label: '低配模式 · 4 进程', value: 'low' },
-]
 
-function doMedia() {
-  return runJob('media', () =>
-    api.startMedia(
-      account.value.folder,
-      true,
-      true,
-      true,
-      true,
-      perfMode.value === 'low' ? 4 : undefined,
-    ),
-  )
+function runKeysStep() {
+  if (!account.value) return null
+  // 已提取过密钥时只需补建会话索引，不必再次读取微信内存
+  if (account.value.has_keys) {
+    return runJob('core', () => api.startCore(account.value.folder))
+  }
+  return doKeys()
 }
 
-async function runAll() {
-  if (!account.value) return
-  if (!account.value.has_keys) {
-    const r = await doKeys()
-    if (!r) return
-  }
-  if (!account.value.decrypted) {
-    const r = await doDecrypt()
-    if (!r) return
-  }
-  if (!account.value.images_decoded || !account.value.voices_decoded) {
-    const r = await doMedia()
-    if (!r) return
-  }
-  message.success('全部准备完成')
-  sessionsLoaded.value = false
-  step.value = 3
-  await loadSessions()
+async function ensureCore() {
+  if (!account.value) return null
+  if (account.value.messages_ready) return true
+  const done = await runJob('core', () => api.startCore(account.value.folder))
+  if (done) sessionsLoaded.value = false
+  return done
+}
+
+const preparedSig = ref('')
+const pickedSig = computed(() => picked.value.slice().sort().join('|'))
+const prepared = computed(
+  () => picked.value.length > 0 && preparedSig.value === pickedSig.value,
+)
+
+function doPrepare() {
+  if (!account.value || !picked.value.length) return null
+  const sig = pickedSig.value
+  return runJob('prepare', () =>
+    api.prepare(account.value.folder, picked.value),
+  ).then((done) => {
+    if (done) preparedSig.value = sig
+    return done
+  })
 }
 
 /* ---------- 会话 ---------- */
@@ -303,22 +305,32 @@ function fmtDate(ts: number) {
 }
 function canNext() {
   if (step.value === 1) return !!selected.value
-  if (step.value === 2) return !!account.value?.decrypted
+  if (step.value === 2) return !!account.value?.has_keys && !!account.value?.core_ready
   if (step.value === 3) return picked.value.length > 0
+  if (step.value === 4) return prepared.value
   return false
 }
-function next() {
-  if (step.value === 2 && !sessionsLoaded.value) loadSessions()
-  step.value = Math.min(4, step.value + 1)
+
+async function next() {
+  if (step.value === 2) {
+    if (!account.value?.messages_ready) {
+      const ok = await ensureCore()
+      if (!ok) return
+    }
+    if (!sessionsLoaded.value) await loadSessions()
+  }
+  step.value = Math.min(5, step.value + 1)
 }
+
 function back() {
   step.value = Math.max(1, step.value - 1)
 }
 
 const stepDefs = [
   { title: '选择账号', desc: '本机微信账号' },
-  { title: '准备数据', desc: '提取密钥并解密' },
+  { title: '提取密钥', desc: '读取微信进程密钥' },
   { title: '选择会话', desc: '群聊或联系人' },
+  { title: '准备数据', desc: '按所选会话解密' },
   { title: '导出', desc: '格式与时间范围' },
 ]
 
@@ -466,22 +478,16 @@ onMounted(() => {
             </n-spin>
           </section>
 
-          <!-- ② 准备 -->
+          <!-- ② 密钥 -->
           <section v-else-if="step === 2" key="2" class="panel">
             <div class="panel-head">
               <div>
-                <h2>准备数据</h2>
+                <h2>提取密钥</h2>
                 <p class="hint">请保持微信登录状态，密钥只存在于运行中的微信进程内存里</p>
               </div>
               <div class="actions">
-                <n-select
-                  v-model:value="perfMode"
-                  size="small"
-                  :options="perfOptions"
-                  style="width: 150px"
-                />
-                <n-button type="primary" :loading="busy" :disabled="busy" @click="runAll">
-                  一键完成
+                <n-button type="primary" :loading="busy" :disabled="busy" @click="runKeysStep">
+                  {{ account?.has_keys ? '建立会话索引' : '提取密钥' }}
                 </n-button>
               </div>
             </div>
@@ -490,84 +496,18 @@ onMounted(() => {
               <div class="prep">
                 <div class="prep-icon"><n-icon size="22"><KeyOutline /></n-icon></div>
                 <div class="prep-title">数据库密钥</div>
-                <div class="prep-desc">从微信进程提取 SQLCipher 密钥</div>
+                <div class="prep-desc">从微信进程提取 SQLCipher 密钥；后续步骤可离线执行</div>
                 <n-tag :type="account?.has_keys ? 'success' : 'default'" size="small" round>
                   {{ account?.has_keys ? '已完成' : '未开始' }}
                 </n-tag>
-                <n-progress
-                  v-if="jobs.keys.status === 'running'"
-                  type="line"
-                  :percentage="jobs.keys.progress"
-                  :show-indicator="false"
-                  style="margin: 10px 0 4px"
-                />
-                <n-button size="small" secondary :disabled="busy" @click="doKeys">
-                  提取密钥
-                </n-button>
               </div>
-
               <div class="prep">
                 <div class="prep-icon"><n-icon size="22"><ServerOutline /></n-icon></div>
-                <div class="prep-title">聊天数据库</div>
-                <div class="prep-desc">解密到本地独立目录，不改动原数据</div>
-                <n-tag :type="account?.decrypted ? 'success' : 'default'" size="small" round>
-                  {{ account?.decrypted ? '已完成' : '未开始' }}
+                <div class="prep-title">会话索引</div>
+                <div class="prep-desc">解密 session.db / contact.db，用于下一步加载会话列表</div>
+                <n-tag :type="account?.core_ready ? 'success' : 'default'" size="small" round>
+                  {{ account?.core_ready ? '已完成' : '未开始' }}
                 </n-tag>
-                <n-progress
-                  v-if="jobs.decrypt.status === 'running'"
-                  type="line"
-                  :percentage="jobs.decrypt.progress"
-                  :show-indicator="false"
-                  style="margin: 10px 0 4px"
-                />
-                <n-button size="small" secondary :disabled="busy" @click="doDecrypt">
-                  开始解密
-                </n-button>
-              </div>
-
-              <div class="prep">
-                <div class="prep-icon"><n-icon size="22"><AlbumsOutline /></n-icon></div>
-                <div class="prep-title">图片 / 视频</div>
-                <div class="prep-desc">
-                  已解出 {{ account?.images_decoded || 0 }} 个图片文件
-                  <template v-if="account?.videos_indexed">
-                    · 视频 {{ account.videos_indexed }} 个（导出时按需转码）
-                  </template>
-                </div>
-                <n-tag :type="account?.images_decoded ? 'success' : 'default'" size="small" round>
-                  {{ account?.images_decoded ? '已完成' : '未开始' }}
-                </n-tag>
-                <n-progress
-                  v-if="jobs.media.status === 'running'"
-                  type="line"
-                  :percentage="jobs.media.progress"
-                  :show-indicator="false"
-                  style="margin: 10px 0 4px"
-                />
-                <n-button size="small" secondary :disabled="busy" @click="doMedia">
-                  解密图片 / 语音 / 索引视频
-                </n-button>
-              </div>
-
-              <div class="prep">
-                <div class="prep-icon"><n-icon size="22"><MicOutline /></n-icon></div>
-                <div class="prep-title">语音</div>
-                <div class="prep-desc">
-                  已转出 {{ account?.voices_decoded || 0 }} 条 WAV
-                </div>
-                <n-tag :type="account?.voices_decoded ? 'success' : 'default'" size="small" round>
-                  {{ account?.voices_decoded ? '已完成' : '未开始' }}
-                </n-tag>
-                <n-progress
-                  v-if="jobs.media.status === 'running'"
-                  type="line"
-                  :percentage="jobs.media.progress"
-                  :show-indicator="false"
-                  style="margin: 10px 0 4px"
-                />
-                <n-button size="small" secondary :disabled="busy" @click="doMedia">
-                  转换语音
-                </n-button>
               </div>
             </div>
 
@@ -650,12 +590,80 @@ onMounted(() => {
             </n-spin>
           </section>
 
-          <!-- ④ 导出 -->
-          <section v-else key="4" class="panel">
+          <!-- ④ 准备所选数据 -->
+          <section v-else-if="step === 4" key="4" class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>准备所选数据</h2>
+                <p class="hint">已选 {{ picked.length }} 个会话 · 仅解密这些会话实际引用的图片 / 语音 / 视频</p>
+              </div>
+              <div class="actions">
+                <n-tag v-if="prepared" type="success" size="small" round>已准备</n-tag>
+                <n-button
+                  type="primary"
+                  :loading="jobs.prepare.status === 'running'"
+                  :disabled="busy && jobs.prepare.status !== 'running'"
+                  @click="doPrepare"
+                >
+                  开始准备
+                </n-button>
+              </div>
+            </div>
+
+            <div class="prepare-grid">
+              <div class="prep">
+                <div class="prep-icon"><n-icon size="22"><ChatbubblesOutline /></n-icon></div>
+                <div class="prep-title">消息数据库</div>
+                <div class="prep-desc">message_0 / media_0（第 3 步已加载，准备前会自动刷新）</div>
+                <n-tag :type="account?.messages_ready ? 'success' : 'default'" size="small" round>
+                  {{ account?.messages_ready ? '已完成' : '未开始' }}
+                </n-tag>
+              </div>
+              <div class="prep">
+                <div class="prep-icon"><n-icon size="22"><AlbumsOutline /></n-icon></div>
+                <div class="prep-title">图片 / 视频</div>
+                <div class="prep-desc">只解密所选会话命中的图片，并转码其中的 HEVC 视频</div>
+                <n-tag :type="prepared ? 'success' : 'default'" size="small" round>
+                  {{ prepared ? '已完成' : '待准备' }}
+                </n-tag>
+              </div>
+              <div class="prep">
+                <div class="prep-icon"><n-icon size="22"><MicOutline /></n-icon></div>
+                <div class="prep-title">语音</div>
+                <div class="prep-desc">只转换所选会话命中的 SILK 语音</div>
+                <n-tag :type="prepared ? 'success' : 'default'" size="small" round>
+                  {{ prepared ? '已完成' : '待准备' }}
+                </n-tag>
+              </div>
+            </div>
+
+            <div v-if="jobs.prepare.status" style="margin-top: 16px">
+              <n-progress type="line" :percentage="jobs.prepare.progress || 0" :show-indicator="false" />
+              <p class="hint" style="margin-top: 6px">{{ jobs.prepare.message }}</p>
+            </div>
+
+            <div v-if="activeJob && jobs[activeJob]?.status" class="console">
+              <div class="console-head">
+                <span>{{ jobs[activeJob].status === 'running' ? '进行中' : jobs[activeJob].status === 'done' ? '已完成' : '失败' }}</span>
+                <span>{{ jobs[activeJob].message }}</span>
+                <span v-if="jobs[activeJob].progress" class="pct">{{ jobs[activeJob].progress }}%</span>
+              </div>
+              <div class="console-body">
+                <div v-for="(l, i) in jobs[activeJob].logs.slice(-6)" :key="i">{{ l }}</div>
+              </div>
+            </div>
+
+            <n-alert v-if="prepared" type="success" style="margin-top: 16px">
+              所选会话的数据已准备完成，可以进入导出。
+            </n-alert>
+          </section>
+
+          <!-- ⑤ 导出 -->
+          <section v-else key="5" class="panel">
             <div class="panel-head">
               <div>
                 <h2>导出</h2>
-                <p class="hint">已选 {{ picked.length }} 个会话 · 视频将在导出时按需转码</p>
+                <p class="hint">已选 {{ picked.length }} 个会话 · 数据已准备完成</p>
               </div>
             </div>
 
@@ -754,7 +762,7 @@ onMounted(() => {
             上一步
           </n-button>
           <span style="flex: 1" />
-          <n-button v-if="step < 4" type="primary" :disabled="!canNext()" @click="next">
+          <n-button v-if="step < 5" type="primary" :disabled="!canNext()" :loading="jobs.core.status === 'running'" @click="next">
             下一步
             <template #icon><n-icon><ChevronForwardOutline /></n-icon></template>
           </n-button>

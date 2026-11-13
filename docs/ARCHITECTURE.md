@@ -116,7 +116,7 @@ page >1：[ciphertext 4016][IV 16][HMAC 64]
 - 源文件：`msg/video/<月份>/<随机哈希>.mp4`、`msg/attach/**/Rec/**/V/*.mp4`
 - 文件名不可直接对应消息；视频消息 XML 的 `md5` = 明文文件 MD5，因此需要计算本地文件哈希建立索引
 - 索引持久化到 `media/<账号>/video_index.json`，按 mtime/size 增量
-- 编码兼容：导出所选会话时，将涉及的 HEVC 按需转码为 H.264，缓存到 `media/<账号>/videos_h264/<md5>.mp4`
+- 编码兼容：准备所选数据时，将涉及的 HEVC 按需转码为 H.264，缓存到 `media/<账号>/videos_h264/<md5>.mp4`
 
 ### 6.4 增量与并发
 

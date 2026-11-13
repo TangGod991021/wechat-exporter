@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from app import __version__
 from app.config import load_config, save_config, account_paths
-from app.core import discovery, keys, decrypt, media
+from app.core import discovery, keys, decrypt, media, prepare
 from app.core.export import ChatStore, export_chats
 from app.core.jobs import JobManager
 
@@ -49,6 +49,12 @@ class MediaBody(BaseModel):
     workers: int | None = None
 
 
+class PrepareBody(BaseModel):
+    account: str
+    targets: list[str]
+    workers: int | None = None
+
+
 def get_account(cfg, folder):
     root = cfg.get('wechat_root') or discovery.detect_wechat_root()
     accounts = discovery.find_accounts(root)
@@ -67,13 +73,18 @@ def make_store(cfg, account):
                      os.path.join(base, 'msg', 'attach')],
         video_cache=str(Path(paths['images']).parent / 'video_index.json'),
         video_playback_dir=str(Path(paths['images']).parent / 'videos_h264'),
-        ffmpeg=c.get('ffmpeg', 'ffmpeg'))
+        ffmpeg=cfg.get('ffmpeg', 'ffmpeg'))
 
 
 def account_state(cfg, account):
     paths = account_paths(cfg, account['folder'])
     keys_file = Path(paths['data']) / 'keys.json'
-    decrypted = (Path(paths['data']) / 'session' / 'session.db').exists()
+    data_root = Path(paths['data'])
+    core_ready = (data_root / 'session' / 'session.db').exists() and \
+        (data_root / 'contact' / 'contact.db').exists()
+    messages_ready = (data_root / 'message' / 'message_0.db').exists() and \
+        (data_root / 'message' / 'media_0.db').exists()
+    decrypted = messages_ready  # 兼容旧字段
     info = {'wxid': account['username'], 'nickname': ''}
     if decrypted:
         try:
@@ -100,6 +111,8 @@ def account_state(cfg, account):
         **account,
         'nickname': info.get('nickname') or account['username'],
         'has_keys': keys_file.exists(),
+        'core_ready': core_ready,
+        'messages_ready': messages_ready,
         'decrypted': decrypted,
         'images_decoded': img_count,
         'voices_decoded': voice_count,
@@ -169,18 +182,46 @@ def create_app():
         def run(job):
             job.update(5, '正在扫描微信内存...')
             found, meta = keys.extract_keys(
-                acc['db_dir'], progress=lambda p: job.update(5 + int(p * 0.9)))
+                acc['db_dir'], progress=lambda p: job.update(5 + int(p * 0.65)))
             if not found:
                 raise RuntimeError(meta.get('message') or meta.get('error') or '未找到密钥')
             Path(paths['data']).mkdir(parents=True, exist_ok=True)
             (Path(paths['data']) / 'keys.json').write_text(
                 json.dumps({'meta': meta, 'keys': found}, ensure_ascii=False, indent=2),
                 encoding='utf-8')
-            job.update(100, f"模式 {meta.get('mode')}，命中 {len(found)} 个库")
+            job.update(70, '密钥已保存，正在建立会话索引...')
+            core = decrypt.decrypt_all(
+                acc['db_dir'], paths['data'], found,
+                only_rels=decrypt.CORE_DB_RELS,
+                progress=lambda p: job.update(70 + int(p * 0.3)))
+            job.update(100, f"模式 {meta.get('mode')}，命中 {len(found)} 个库，会话索引就绪")
             return {'mode': meta.get('mode'), 'count': len(found),
-                    'missing': meta.get('missing', []), 'stats': meta.get('stats')}
+                    'missing': meta.get('missing', []), 'stats': meta.get('stats'),
+                    'core': core}
 
         return {'job': mgr.start('keys', run)}
+
+    @app.post('/api/core')
+    def start_core(body: AccountBody):
+        """解密会话索引与消息库（第 3 步加载会话、预览用）"""
+        c = cfg()
+        acc = get_account(c, body.account)
+        paths = account_paths(c, acc['folder'])
+        keys_file = Path(paths['data']) / 'keys.json'
+        if not keys_file.exists():
+            raise HTTPException(400, '请先提取密钥')
+
+        def run(job):
+            data = json.loads(keys_file.read_text(encoding='utf-8'))
+            job.update(2, '正在解密会话索引与消息库...')
+            res = decrypt.decrypt_all(
+                acc['db_dir'], paths['data'], data['keys'],
+                only_rels=decrypt.CHAT_DB_RELS,
+                progress=lambda p: job.update(2 + int(p * 0.96)))
+            job.update(100, f"会话数据就绪（成功 {res['ok']}，跳过 {res['skipped']}）")
+            return res
+
+        return {'job': mgr.start('core', run)}
 
     @app.post('/api/decrypt')
     def start_decrypt(body: AccountBody):
@@ -235,6 +276,38 @@ def create_app():
             return result
 
         return {'job': mgr.start('media', run)}
+
+    @app.post('/api/prepare')
+    def start_prepare(body: PrepareBody):
+        """按所选会话准备媒体数据（五步流程第 4 步）"""
+        c = cfg()
+        acc = get_account(c, body.account)
+        paths = account_paths(c, acc['folder'])
+        keys_file = Path(paths['data']) / 'keys.json'
+        if not keys_file.exists():
+            raise HTTPException(400, '请先提取密钥')
+        if not body.targets:
+            raise HTTPException(400, '请先选择会话')
+
+        def run(job):
+            data = json.loads(keys_file.read_text(encoding='utf-8'))
+            job.update(1, '正在刷新会话数据...')
+            decrypt.decrypt_all(
+                acc['db_dir'], paths['data'], data['keys'],
+                only_rels=decrypt.CHAT_DB_RELS,
+                progress=lambda p: job.update(1 + int(p * 0.09)))
+            store = make_store(c, acc)
+            job.update(10, f'正在准备 {len(body.targets)} 个所选会话...')
+            result = prepare.prepare_selected_media(
+                store, body.targets,
+                os.path.join(acc['base_dir'], 'msg', 'attach'),
+                acc['username'], discovery.find_kvcomm_codes(),
+                c.get('ffmpeg', 'ffmpeg'), workers=body.workers,
+                progress=lambda p, m='': job.update(10 + int(p * 0.9), m))
+            job.update(100, '所选会话数据准备完成')
+            return result
+
+        return {'job': mgr.start('prepare', run)}
 
     @app.get('/api/sessions')
     def sessions(account: str):

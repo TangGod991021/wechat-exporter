@@ -57,6 +57,7 @@ class ChatStore:
         self._names = None
         self._image_index = None
         self._video_index = None
+        self._table_map = None
 
     # ---------- 基础信息 ----------
     def contacts(self):
@@ -121,19 +122,31 @@ class ChatStore:
             })
         return out
 
-    def find_table(self, username):
-        h = hashlib.md5(username.encode()).hexdigest()
+    def table_map(self):
+        """建立一次「消息表名 -> 数据库路径」映射，避免逐会话反复打开所有库"""
+        if self._table_map is not None:
+            return self._table_map
+        mapping = {}
         for db in self.message_dbs:
-            c = sqlite3.connect(db)
             try:
-                row = c.execute(
-                    "select name from sqlite_master where type='table' and name=?",
-                    (f'Msg_{h}',)).fetchone()
-            finally:
-                c.close()
-            if row:
-                return db, row[0]
-        return None, None
+                c = sqlite3.connect(db)
+                try:
+                    rows = c.execute(
+                        "select name from sqlite_master where type='table' "
+                        "and name like 'Msg_%'").fetchall()
+                finally:
+                    c.close()
+            except sqlite3.DatabaseError:
+                continue  # 尚未解密或格式不符
+            for (name,) in rows:
+                mapping[name] = db
+        self._table_map = mapping
+        return mapping
+
+    def find_table(self, username):
+        name = f"Msg_{hashlib.md5(username.encode()).hexdigest()}"
+        db = self.table_map().get(name)
+        return (db, name) if db else (None, None)
 
     def message_count(self, username):
         db, table = self.find_table(username)
@@ -256,6 +269,7 @@ class ChatStore:
         media = ''
         poster = ''
         video_md5 = ''
+        image_md5 = ''
 
         if kind == 'chat_history':
             for rec in parsed.get('records', []):
@@ -265,6 +279,7 @@ class ChatStore:
                     rec['video_md5'] = md5 or ''
                 elif rec.get('kind') == 'image':
                     rec['media'] = self._find_image(md5) or ''
+                    rec['image_md5'] = md5 or ''
                 else:
                     rec['media'] = ''
 
@@ -280,6 +295,7 @@ class ChatStore:
             if not md5:
                 m = re.search(r'md5="([0-9a-fA-F]{32})"', content)
                 md5 = m.group(1) if m else None
+            image_md5 = (md5 or '').lower()
             media = self._find_image(md5) or ''
         elif base == 34:
             m = re.search(r'voicelength="(\d+)"', content)
@@ -319,6 +335,7 @@ class ChatStore:
             'media': media,
             'poster': poster,
             'video_md5': video_md5,
+            'image_md5': image_md5,
             'content': parsed,
         }
 
@@ -604,6 +621,31 @@ def _video_md5s(msgs):
             if r.get('video_md5'):
                 found.add(r['video_md5'])
     return found
+
+
+def collect_media_ids(store, targets, progress=None):
+    """解析所选会话，收集需要处理的图片 / 语音 / 视频标识。"""
+    images, voices, videos = set(), set(), set()
+    total = max(1, len(targets))
+    for i, username in enumerate(targets, 1):
+        for m in store.messages(username):
+            if m.get('image_md5'):
+                images.add(m['image_md5'].lower())
+            if m.get('video_md5'):
+                videos.add(m['video_md5'].lower())
+            if m.get('type') == 'voice' or m.get('kind') == 'voice':
+                voices.add((username, m['local_id']))
+            for r in (m.get('content') or {}).get('records') or []:
+                if r.get('kind') == 'image':
+                    for key in ('md5', 'thumb_md5', 'image_md5'):
+                        v = (r.get(key) or '').lower()
+                        if v:
+                            images.add(v)
+                if r.get('video_md5'):
+                    videos.add(r['video_md5'].lower())
+        if progress:
+            progress(int(i / total * 100), f'解析所选会话 {i}/{total}')
+    return {'images': images, 'voices': voices, 'videos': videos}
 
 
 def _apply_playback(msgs, playback_dir):

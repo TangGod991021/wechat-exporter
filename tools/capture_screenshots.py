@@ -52,6 +52,8 @@ BOOTSTRAP = {
             'db_count': 20,
             'last_active': 1762992000,
             'has_keys': True,
+            'core_ready': True,
+            'messages_ready': True,
             'decrypted': True,
             'images_decoded': 1832,
             'voices_decoded': 96,
@@ -65,6 +67,8 @@ BOOTSTRAP = {
             'db_count': 22,
             'last_active': 1761955200,
             'has_keys': False,
+            'core_ready': False,
+            'messages_ready': False,
             'decrypted': False,
             'images_decoded': 0,
             'voices_decoded': 0,
@@ -148,6 +152,7 @@ MESSAGES = [
 ]
 
 JOB_POLLS = {'n': 0}
+PREP_POLLS = {'n': 0}
 
 
 def mock_png() -> bytes:
@@ -186,10 +191,27 @@ def handle_api(route, request):
         return json_response(route, {'sessions': SESSIONS})
     if path.endswith('/api/chat'):
         return json_response(route, {'messages': MESSAGES})
+    if path.endswith('/api/core'):
+        return json_response(route, {'job': 'demo-core'})
+    if path.endswith('/api/prepare'):
+        PREP_POLLS['n'] = 0
+        return json_response(route, {'job': 'demo-prepare'})
     if path.endswith('/api/export'):
         JOB_POLLS['n'] = 0
         return json_response(route, {'job': 'demo-export'})
     if '/api/jobs/' in path:
+        jid = path.rsplit('/', 1)[-1]
+        if jid == 'demo-prepare':
+            PREP_POLLS['n'] += 1
+            if PREP_POLLS['n'] < 8:
+                return json_response(route, {
+                    'status': 'running', 'progress': min(90, PREP_POLLS['n'] * 12),
+                    'message': '正在解密图片 12/28…',
+                    'logs': ['解析所选会话 2/2', '图片 12/28']})
+            return json_response(route, {
+                'status': 'done', 'progress': 100,
+                'message': '所选会话数据准备完成', 'logs': [],
+                'result': {'selected': {'images': 28, 'voices': 6, 'videos': 2}}})
         JOB_POLLS['n'] += 1
         if JOB_POLLS['n'] < 6:
             pct = min(95, JOB_POLLS['n'] * 18)
@@ -269,10 +291,10 @@ def main():
         shot(page, '01-accounts-light.png')
 
         page.get_by_role('button', name='下一步').click()
-        page.get_by_text('准备数据', exact=True).first.wait_for()
+        page.get_by_text('提取密钥', exact=True).first.wait_for()
         page.wait_for_timeout(300)
         scroll_main(page)
-        shot(page, '02-prepare-light.png')
+        shot(page, '02-keys-light.png')
 
         page.get_by_role('button', name='下一步').click()
         page.get_by_text('产品设计讨论组').wait_for()
@@ -298,46 +320,64 @@ def main():
         page.keyboard.press('Escape')
         page.wait_for_timeout(400)
 
-        # 勾选两个会话 → 导出页
+        # 勾选两个会话 → 准备数据页
         boxes = page.locator('.sess .n-checkbox')
         boxes.nth(0).click()
         boxes.nth(1).click()
+        page.get_by_role('button', name='下一步').click()
+        page.get_by_text('准备所选数据').wait_for()
+        page.wait_for_timeout(300)
+        scroll_main(page)
+        shot(page, '06-prepare-light.png')
+
+        # 准备进行中 → 完成
+        page.get_by_role('button', name='开始准备').click()
+        page.get_by_text('正在解密图片').first.wait_for()
+        page.wait_for_timeout(700)
+        scroll_main(page, 'bottom')
+        shot(page, '07-prepare-progress-light.png')
+        page.get_by_text('所选会话的数据已准备完成').wait_for(timeout=15000)
+        page.wait_for_timeout(300)
+        scroll_main(page)
+        shot(page, '08-prepare-done-light.png')
+
+        # 导出页
         page.get_by_role('button', name='下一步').click()
         page.get_by_text('导出格式').wait_for()
         page.set_viewport_size({'width': 1280, 'height': 900})
         page.wait_for_timeout(300)
         scroll_main(page)
-        shot(page, '06-export-light.png')
+        shot(page, '09-export-light.png')
 
         # 导出进行中 → 完成
         page.get_by_role('button', name='开始导出').click()
         page.get_by_text('正在导出').wait_for()
         page.wait_for_timeout(700)
         scroll_main(page, 'bottom')
-        shot(page, '07-export-progress-light.png')
+        shot(page, '10-export-progress-light.png')
         page.get_by_text('导出完成').wait_for(timeout=15000)
         page.wait_for_timeout(300)
         page.set_viewport_size({'width': 1280, 'height': 1100})
         scroll_main(page)
-        shot(page, '08-export-done-light.png')
+        shot(page, '11-export-done-light.png')
 
         # 深色模式：导出页、会话页、聊天预览
         page.locator('header .n-switch').click()
         page.wait_for_timeout(400)
         scroll_main(page)
-        shot(page, '09-export-done-dark.png')
+        shot(page, '12-export-done-dark.png')
 
         page.set_viewport_size({'width': 1280, 'height': 800})
         page.get_by_text('选择会话', exact=True).first.click()
         page.wait_for_timeout(500)
         scroll_main(page)
-        shot(page, '10-sessions-dark.png')
+        shot(page, '13-sessions-dark.png')
 
         scroll_main(page)
         page.get_by_text('产品设计讨论组').click()
         page.locator('.chat-view').wait_for()
         page.wait_for_timeout(600)
-        shot(page, '11-chat-preview-dark.png')
+        shot(page, '14-chat-preview-dark.png')
 
         if errors:
             print('前端脚本错误：')

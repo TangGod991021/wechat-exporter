@@ -2,7 +2,7 @@
 
 | 文档 | 内容 |
 |---|---|
-| [USAGE.md](USAGE.md) | 安装、四步使用流程与常见问题 |
+| [USAGE.md](USAGE.md) | 安装、五步使用流程与常见问题 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 模块划分、数据流与关键设计 |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发环境、构建、测试与扩展指南 |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | 微信版本兼容性与密钥策略 |

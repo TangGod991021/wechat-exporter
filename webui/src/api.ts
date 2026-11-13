@@ -22,6 +22,13 @@ export const api = {
   pickFolder: () => request('/api/pick-folder', { method: 'POST' }),
   startKeys: (account: string) =>
     request('/api/keys', { method: 'POST', body: JSON.stringify({ account }) }),
+  core: (account: string) =>
+    request('/api/core', { method: 'POST', body: JSON.stringify({ account }) }),
+  prepare: (account: string, targets: string[], workers?: number) =>
+    request('/api/prepare', {
+      method: 'POST',
+      body: JSON.stringify({ account, targets, workers }),
+    }),
   startDecrypt: (account: string) =>
     request('/api/decrypt', { method: 'POST', body: JSON.stringify({ account }) }),
   startMedia: (

@@ -73,6 +73,9 @@ npm run build
 # 子进程隐藏窗口标志
 .venv\Scripts\python tests\test_proc.py
 
+# 按会话过滤图片 / 语音 / WxAM 与媒体标识收集
+.venv\Scripts\python tests\test_prepare.py
+
 # 真实数据库抽样（可选）
 set WECHAT_EXPORTER_DB=D:\path\to\message_0.db
 .venv\Scripts\python tests\test_parser.py

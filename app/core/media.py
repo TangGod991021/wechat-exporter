@@ -233,9 +233,13 @@ def _voice_batch_worker(batch):
 
 
 # ---------------------------------------------------------------- 各阶段
-def _plan_images(attach_dir, out_dir):
+def _md5_base(stem):
+    return stem[:-2] if stem[-2:].lower() in ('_h', '_t') else stem
+
+
+def _plan_images(attach_dir, out_dir, only_md5s=None):
+    only = {m.lower() for m in only_md5s} if only_md5s is not None else None
     pending, skipped = [], 0
-    dirs = {}
     for dirpath, _dirs, names in os.walk(attach_dir):
         if os.path.basename(dirpath) != 'Img':
             continue
@@ -245,8 +249,10 @@ def _plan_images(attach_dir, out_dir):
         for n in names:
             if not n.endswith('.dat'):
                 continue
-            src = os.path.join(dirpath, n)
             stem = os.path.splitext(n)[0]
+            if only is not None and _md5_base(stem).lower() not in only:
+                continue
+            src = os.path.join(dirpath, n)
             out = existing.get(stem)
             if out and os.path.getmtime(out) >= os.path.getmtime(src):
                 skipped += 1
@@ -255,11 +261,15 @@ def _plan_images(attach_dir, out_dir):
     return pending, skipped
 
 
-def _plan_wxam(images_dir):
+def _plan_wxam(images_dir, only_md5s=None):
+    only = {m.lower() for m in only_md5s} if only_md5s is not None else None
     pending, skipped = [], 0
     for dirpath, _dirs, names in os.walk(images_dir):
         for n in names:
             if not n.lower().endswith('.hevc'):
+                continue
+            stem = os.path.splitext(n)[0]
+            if only is not None and _md5_base(stem).lower() not in only:
                 continue
             src = os.path.join(dirpath, n)
             dst = os.path.splitext(src)[0] + '.jpg'
@@ -435,7 +445,8 @@ def prepare_video_playback(video_index, cache_path, playback_dir, ffmpeg='ffmpeg
             'skipped': skipped, 'failed': fail}
 
 
-def _plan_voices(media_db, voices_dir):
+def _plan_voices(media_db, voices_dir, only_messages=None):
+    """only_messages: {(chat_id, local_id)}，用于只转换所选会话的语音"""
     c = sqlite3.connect(media_db)
     names = {rid: u for rid, u in c.execute('select rowid, user_name from Name2Id')}
     rows = c.execute(
@@ -444,7 +455,10 @@ def _plan_voices(media_db, voices_dir):
     c.close()
     pending, skipped = [], 0
     for cid, ctime, lid, blob in rows:
-        chat = re.sub(r'[\\/:*?"<>|]', '_', names.get(cid, f'id_{cid}'))[:80]
+        chat_id = names.get(cid, f'id_{cid}')
+        if only_messages is not None and (chat_id, lid) not in only_messages:
+            continue
+        chat = re.sub(r'[\\/:*?"<>|]', '_', chat_id)[:80]
         dt = datetime.fromtimestamp(ctime).strftime('%Y%m%d_%H%M%S')
         out = os.path.join(voices_dir, chat, f'{dt}_{lid}.wav')
         if os.path.exists(out):
@@ -452,6 +466,80 @@ def _plan_voices(media_db, voices_dir):
             continue
         pending.append((out, blob))
     return pending, skipped
+
+
+def prepare_images(attach_dir, images_dir, wxid, codes, workers=None,
+                   only_md5s=None, progress=None):
+    """只解密指定 md5 的图片（None 表示全部）"""
+    workers = workers or default_workers()
+    progress = progress or (lambda p, m='': None)
+    derived = derive_image_key(attach_dir, wxid, codes)
+    if not derived:
+        raise RuntimeError('无法推导图片密钥（kvcomm code 未找到或版本不匹配）')
+    _, aes_key, xor_key = derived
+    pending, skipped = _plan_images(attach_dir, images_dir, only_md5s)
+    progress(0, f'图片待解密 {len(pending)}，已跳过 {skipped}')
+    tasks = [(c, aes_key, xor_key) for c in _chunks(pending, CHUNK_FILES)]
+    ok = fail = 0
+    formats = {}
+    if tasks:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_image_batch_worker, t) for t in tasks]
+            for i, f in enumerate(as_completed(futs), 1):
+                o, fa, fm = f.result()
+                ok += o
+                fail += fa
+                for k, v in fm.items():
+                    formats[k] = formats.get(k, 0) + v
+                progress(i / len(tasks), f'图片 {ok + fail}/{len(pending)}')
+    progress(1, f'图片完成 {ok}，跳过 {skipped}，失败 {fail}')
+    return {'total': len(pending) + skipped, 'ok': ok,
+            'skipped': skipped, 'failed': fail, 'formats': formats}
+
+
+def prepare_wxam(images_dir, workers=None, only_md5s=None, progress=None):
+    """只转换指定 md5 的 WxAM（.hevc）图片"""
+    workers = workers or default_workers()
+    progress = progress or (lambda p, m='': None)
+    pending, skipped = _plan_wxam(images_dir, only_md5s)
+    progress(0, f'WxAM 待转换 {len(pending)}，已跳过 {skipped}')
+    tasks = list(_chunks(pending, max(50, CHUNK_FILES // 4)))
+    ok = fail = 0
+    if tasks:
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            futs = [ex.submit(_wxam_batch_worker, t) for t in tasks]
+            for i, f in enumerate(as_completed(futs), 1):
+                o, fa = f.result()
+                ok += o
+                fail += fa
+                progress(i / len(tasks), f'WxAM {ok + fail}/{len(pending)}')
+    progress(1, f'WxAM 完成 {ok}，跳过 {skipped}，失败 {fail}')
+    return {'total': len(pending) + skipped, 'ok': ok,
+            'skipped': skipped, 'failed': fail}
+
+
+def prepare_voices(media_db, voices_dir, workers=None, only_messages=None,
+                   progress=None):
+    """只转换指定 (chat_id, local_id) 的语音"""
+    workers = workers or default_workers()
+    progress = progress or (lambda p, m='': None)
+    if not os.path.exists(media_db):
+        return {'error': '未找到 media_0.db'}
+    pending, skipped = _plan_voices(media_db, voices_dir, only_messages)
+    progress(0, f'语音待转换 {len(pending)}，已跳过 {skipped}')
+    tasks = list(_chunks(pending, 100))
+    ok = fail = 0
+    if tasks:
+        with ProcessPoolExecutor(max_workers=max(2, workers // 2)) as ex:
+            futs = [ex.submit(_voice_batch_worker, t) for t in tasks]
+            for i, f in enumerate(as_completed(futs), 1):
+                o, fa = f.result()
+                ok += o
+                fail += fa
+                progress(i / len(tasks), f'语音 {ok + fail}/{len(pending)}')
+    progress(1, f'语音完成 {ok}，跳过 {skipped}，失败 {fail}')
+    return {'total': len(pending) + skipped, 'ok': ok,
+            'skipped': skipped, 'failed': fail}
 
 
 # ---------------------------------------------------------------- 总编排
