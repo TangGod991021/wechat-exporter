@@ -341,13 +341,20 @@ class ChatStore:
 
 
 URL_RE = re.compile(r'(https?://[^\s<"]+)')
+SAFE_HREF_RE = re.compile(r'^(https?://|mailto:)', re.I)
+
+
+def _safe_href(url):
+    """只允许 http/https/mailto，阻止 javascript: / data: 等可执行 scheme"""
+    url = (url or '').strip()
+    return url if SAFE_HREF_RE.match(url) else ''
 
 
 def linkify(s):
     """先转义再识别链接，避免注入"""
     esc = html.escape(s or '')
     return URL_RE.sub(
-        lambda m: f'<a href="{m.group(1)}" target="_blank" rel="noopener">{m.group(1)}</a>',
+        lambda m: f'<a href="{m.group(1)}" target="_blank" rel="noopener noreferrer">{m.group(1)}</a>',
         esc)
 
 
@@ -404,8 +411,8 @@ def _rich_body(m, uri_fn=None):
             f'<div class="q-text">{linkify(q.get("text", ""))}</div></div>'
             f'<div class="reply">{linkify(c.get("reply") or m.get("text", ""))}</div>')
     if kind == 'link':
-        href = c.get('url') or ''
-        title_html = (f'<a href="{html.escape(href)}" target="_blank" rel="noopener">'
+        href = _safe_href(c.get('url'))
+        title_html = (f'<a href="{html.escape(href)}" target="_blank" rel="noopener noreferrer">'
                       f'{linkify(c.get("title") or href)}</a>') if href else linkify(c.get('title', ''))
         des = f'<div class="card-des">{linkify(c.get("des", ""))}</div>' if c.get('des') else ''
         meta = f'<div class="card-meta">{html.escape(_domain(href))}</div>' if href else ''

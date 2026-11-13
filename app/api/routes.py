@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """FastAPI 接口"""
+import hmac
 import json
 import os
 import sys
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -18,6 +19,32 @@ from app.core.jobs import JobManager
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DIST = BASE_DIR / 'webui' / 'dist'
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.realpath(path))
+
+
+def _within(path: str, roots) -> bool:
+    """路径必须位于某个允许目录内（按目录边界比较，防止前缀绕过）"""
+    real = _norm(path)
+    for root in roots:
+        if not root:
+            continue
+        base = _norm(root)
+        if real == base or real.startswith(base + os.sep):
+            return True
+    return False
+
+
+def _file_roots(cfg: dict) -> list:
+    """允许通过 /api/file 读取的目录（仅媒体缓存与导出结果）"""
+    return [cfg.get('media_dir'), cfg.get('export_dir')]
+
+
+def _open_roots(cfg: dict) -> list:
+    """允许用系统程序打开的目录（仅媒体缓存与导出结果）"""
+    return [cfg.get('media_dir'), cfg.get('export_dir')]
 
 
 class ConfigBody(BaseModel):
@@ -123,16 +150,31 @@ def account_state(cfg, account):
     }
 
 
-def create_app():
+def create_app(token: str = ''):
     app = FastAPI(title='微信聊天记录导出', version=__version__)
-    app.add_middleware(
-        CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
     mgr = JobManager()
     app.state.mgr = mgr
     app.state.cfg = load_config()
 
     def cfg():
         return app.state.cfg
+
+    @app.middleware('http')
+    async def guard(request: Request, call_next):
+        """API 鉴权 + 防 DNS rebinding（静态页面本身不拦截）"""
+        if token and request.url.path.startswith('/api'):
+            supplied = (request.headers.get('x-auth-token')
+                        or request.query_params.get('token') or '')
+            if not hmac.compare_digest(supplied, token):
+                return JSONResponse({'detail': '未授权：访问令牌无效'}, status_code=401)
+            host = (request.headers.get('host') or '').lower()
+            if not (host.startswith('127.0.0.1') or host.startswith('localhost')
+                    or host.startswith('[::1]')):
+                return JSONResponse({'detail': '非法 Host'}, status_code=403)
+        response = await call_next(request)
+        response.headers.setdefault('Referrer-Policy', 'no-referrer')
+        response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+        return response
 
     @app.get('/api/bootstrap')
     def bootstrap():
@@ -153,8 +195,13 @@ def create_app():
 
     @app.post('/api/config')
     def set_config(body: ConfigBody):
+        data = body.model_dump()
+        for key in ('wechat_root', 'export_dir'):
+            val = data.get(key)
+            if val and not os.path.isdir(val):
+                raise HTTPException(400, f'{key} 不是有效目录：{val}')
         c = cfg()
-        for k, v in body.model_dump().items():
+        for k, v in data.items():
             if v is not None:
                 c[k] = v
         save_config(c)
@@ -370,6 +417,8 @@ def create_app():
     @app.post('/api/open-path')
     def open_folder(body: dict):
         path = body.get('path') or cfg()['export_dir']
+        if not _within(path, _open_roots(cfg())):
+            raise HTTPException(403, '路径不在允许范围内')
         try:
             os.startfile(path)  # noqa: S606
             return {'ok': True}
@@ -380,10 +429,7 @@ def create_app():
     def get_file(path: str):
         from fastapi.responses import FileResponse
         real = os.path.realpath(path)
-        c = cfg()
-        allowed = [c.get('media_dir'), c.get('data_dir'), c.get('export_dir'),
-                   c.get('wechat_root'), discovery.detect_wechat_root()]
-        if not any(a and real.startswith(os.path.realpath(a)) for a in allowed):
+        if not _within(real, _file_roots(cfg())):
             raise HTTPException(403, '路径不在允许范围内')
         if not os.path.isfile(real):
             raise HTTPException(404, '文件不存在')

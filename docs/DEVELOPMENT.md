@@ -32,9 +32,13 @@ cd webui
 npm run dev
 ```
 
-访问 http://localhost:5173 ，`/api` 会代理到 8765。
+访问 http://localhost:5173/?token=devtoken ，`/api` 会代理到 8765。后端需用相同令牌启动：
 
-原生窗口：
+```bash
+.venv\Scripts\python run.py --browser --port 8765 --token devtoken
+```
+
+原生窗口（默认随机令牌，控制台会打印带令牌的访问地址）：
 
 ```bash
 .venv\Scripts\python run.py

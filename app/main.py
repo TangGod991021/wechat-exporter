@@ -3,6 +3,7 @@
 import argparse
 import multiprocessing
 import os
+import secrets
 import socket
 import sys
 import threading
@@ -88,9 +89,12 @@ def _run():
     ap = argparse.ArgumentParser()
     ap.add_argument('--browser', action='store_true', help='用默认浏览器打开')
     ap.add_argument('--port', type=int, default=0)
+    ap.add_argument('--token', default='', help='API 访问令牌（默认随机生成）')
     args = ap.parse_args()
 
-    app = create_app()
+    token = args.token or os.environ.get('WECHAT_EXPORTER_TOKEN') \
+        or secrets.token_urlsafe(24)
+    app = create_app(token=token)
     port = args.port or free_port()
     server_errors = []
 
@@ -106,7 +110,8 @@ def _run():
         detail = server_errors[0] if server_errors else '（服务线程未报告具体错误）'
         raise RuntimeError(f'本地服务启动失败\n{detail}')
 
-    url = f'http://127.0.0.1:{port}'
+    url = f'http://127.0.0.1:{port}/?token={token}'
+    print(f'本地服务地址（含访问令牌）：{url}', flush=True)
     if args.browser:
         webbrowser.open(url)
         try:

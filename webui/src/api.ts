@@ -1,6 +1,18 @@
+const TOKEN = new URLSearchParams(window.location.search).get('token') || ''
+
+function authHeaders(): Record<string, string> {
+  return TOKEN ? { 'X-Auth-Token': TOKEN } : {}
+}
+
+/** 媒体文件直链（img/video/audio 无法带请求头，令牌走查询参数） */
+export function fileUrl(path: string) {
+  const base = '/api/file?path=' + encodeURIComponent(path)
+  return TOKEN ? base + '&token=' + encodeURIComponent(TOKEN) : base
+}
+
 async function request(path: string, options: RequestInit = {}) {
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     ...options,
   })
   if (!res.ok) {

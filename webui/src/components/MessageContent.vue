@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { fileUrl as mediaUrl } from '../api'
 
 const props = defineProps<{ msg: any }>()
 const emit = defineEmits<{ (e: 'open-record', content: any): void }>()
@@ -28,11 +29,16 @@ const icons: Record<string, string> = {
 }
 const icon = computed(() => icons[kind.value] || '📦')
 const isWav = computed(() => (props.msg?.media || '').toLowerCase().endsWith('.wav'))
-const fileUrl = computed(() => '/api/file?path=' + encodeURIComponent(props.msg.media))
+const fileUrl = computed(() => mediaUrl(props.msg.media))
 
 function fileUrlOf(p: string) {
-  return '/api/file?path=' + encodeURIComponent(p)
+  return mediaUrl(p)
 }
+
+const safeUrl = computed(() => {
+  const u = content.value.url || ''
+  return /^(https?:|mailto:)/i.test(u) ? u : undefined
+})
 
 const domain = computed(() => {
   const m = /^https?:\/\/([^/]+)/.exec(content.value.url || '')
@@ -70,9 +76,9 @@ function linkify(s: string) {
     <template v-else-if="kind === 'link'">
       <a
         class="card"
-        :href="content.url || undefined"
+        :href="safeUrl"
         target="_blank"
-        rel="noopener"
+        rel="noopener noreferrer"
       >
         <div class="card-title" v-html="linkify(content.title || content.url || msg.text)" />
         <div v-if="content.des" class="card-des">{{ content.des }}</div>

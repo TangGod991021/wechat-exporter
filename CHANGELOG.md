@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### 安全
+
+- 本地 API 启用随机访问令牌鉴权，移除通配 CORS，校验 Host 防 DNS rebinding
+- `/api/file`、`/api/open-path` 改为严格目录白名单，不再允许读取解密库或任意文件
+- 链接消息只允许 http/https/mailto，避免预览与导出 HTML 执行 `javascript:`
+
 ### 新增
 
 - 便携版一键打包脚本 `build-portable.bat`：自动安装依赖、构建前端、执行 PyInstaller 打包

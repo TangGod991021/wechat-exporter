@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
-"""端到端冒烟测试：bootstrap -> keys -> decrypt -> sessions"""
+"""端到端冒烟测试：bootstrap -> keys -> decrypt -> sessions
+
+先以固定令牌启动服务，再运行本脚本：
+    set WECHAT_EXPORTER_TOKEN=devtoken
+    python run.py --browser --token devtoken
+    python tests/smoke.py
+"""
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -8,17 +15,20 @@ import urllib.request
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 BASE = 'http://127.0.0.1:8765'
+TOKEN = os.environ.get('WECHAT_EXPORTER_TOKEN', '')
+HEADERS = {'X-Auth-Token': TOKEN} if TOKEN else {}
 
 
 def get(path):
-    with urllib.request.urlopen(BASE + path, timeout=60) as r:
+    req = urllib.request.Request(BASE + path, headers=HEADERS)
+    with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode('utf-8'))
 
 
 def post(path, body):
     req = urllib.request.Request(
         BASE + path, data=json.dumps(body).encode('utf-8'),
-        headers={'Content-Type': 'application/json'}, method='POST')
+        headers={'Content-Type': 'application/json', **HEADERS}, method='POST')
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode('utf-8'))
 

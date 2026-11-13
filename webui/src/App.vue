@@ -18,7 +18,7 @@ import {
   ServerOutline,
   SunnyOutline,
 } from '@vicons/ionicons5'
-import { api, waitJob } from './api'
+import { api, fileUrl, waitJob } from './api'
 import MessageContent from './components/MessageContent.vue'
 
 const { message: msgLight } = createDiscreteApi(['message'])
@@ -273,9 +273,6 @@ function isSystem(m: any) {
   return m.sender === '系统' || ['system', 'pat', 'unsupported'].includes(m.kind)
 }
 
-function fileUrl(p: string) {
-  return '/api/file?path=' + encodeURIComponent(p)
-}
 
 /* ---------- 转发聊天记录 ---------- */
 const recordShow = ref(false)

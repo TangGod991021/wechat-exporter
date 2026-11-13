@@ -6,15 +6,21 @@
 
 ```
 app.exe（pywebview 原生窗口）
-  └─ 本地 FastAPI（127.0.0.1，随机端口）
+  └─ 本地 FastAPI（127.0.0.1，随机端口，API 需访问令牌）
        ├─ /api/bootstrap        账号与运行环境
+       ├─ /api/config           配置读写
+       ├─ /api/pick-folder      选择数据目录
+       ├─ /api/locate-wechat    Everything 自动定位数据目录
        ├─ /api/keys             提取密钥（后台任务）
+       ├─ /api/core             建立会话索引（后台任务）
+       ├─ /api/prepare          按所选会话准备媒体（后台任务）
        ├─ /api/decrypt          解密数据库（后台任务）
        ├─ /api/media            图片 / 语音 / 视频（后台任务）
        ├─ /api/sessions         会话列表
        ├─ /api/chat             消息预览
        ├─ /api/export           导出（后台任务）
        ├─ /api/jobs/{id}        任务进度
+       ├─ /api/open-path        用系统程序打开白名单目录
        └─ /api/file             本地媒体文件（白名单）
 ```
 
@@ -157,7 +163,11 @@ page >1：[ciphertext 4016][IV 16][HMAC 64]
 
 ## 9. 安全边界
 
-- 只监听 `127.0.0.1`
+- 只监听 `127.0.0.1`；启动时生成随机访问令牌，页面通过 `?token=` 获取，API 请求需携带
+  `X-Auth-Token` 或 `token` 查询参数（媒体直链用后者）；非本机 Host 一律 403，防 DNS rebinding
+- 不启用 CORS：跨源页面无法读取接口响应
+- `/api/file` 仅允许媒体缓存与导出目录，按目录边界校验（不接受前缀绕过）
+- `/api/open-path` 仅允许打开媒体缓存/导出目录内的路径
+- 消息中的链接只允许 `http/https/mailto`，前端与导出 HTML 双端过滤
 - 无任何外网请求
-- `/api/file` 白名单限制：微信数据目录、解密数据、媒体缓存、导出目录
 - 原始微信数据只读
