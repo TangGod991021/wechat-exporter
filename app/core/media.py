@@ -361,6 +361,7 @@ def _transcode_one(src, dst, ffmpeg):
         r = proc.run(
             [ffmpeg, '-y', '-v', 'error', '-i', src,
              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+             '-pix_fmt', 'yuv420p',   # 10-bit HDR 源也要转成浏览器可播放的 8-bit
              '-c:a', 'aac', '-movflags', '+faststart', tmp],
             capture_output=True, timeout=600)
         if r.returncode == 0 and os.path.exists(tmp) and os.path.getsize(tmp) > 0:

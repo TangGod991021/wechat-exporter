@@ -430,6 +430,15 @@ def create_app(token: str = ''):
                 body.since, body.until, c['export_dir'],
                 archive=body.archive,
                 progress=lambda p, m='': job.update(8 + int(p * 0.9), m))
+            errors = result.get('errors') or []
+            if errors and not result.get('files'):
+                detail = '；'.join(f"{e['name']}: {e['error']}"
+                                  for e in errors[:3])
+                raise RuntimeError(f'全部会话导出失败：{detail}')
+            if errors:
+                detail = '；'.join(f"{e['name']}: {e['error']}"
+                                  for e in errors[:3])
+                job.update(99, f"{len(errors)} 个会话失败：{detail}")
             job.update(100, f"已生成 {len(result['files'])} 个文件")
             return result
 

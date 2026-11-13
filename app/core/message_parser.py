@@ -10,6 +10,7 @@ parse_content() 输出结构化字典，供导出与界面渲染使用：
 import html as html_mod
 import re
 import xml.etree.ElementTree as ET
+from urllib.parse import quote
 
 MEDIA_TEXT = {
     3: '[图片]', 34: '[语音]', 43: '[视频]', 47: '[表情]',
@@ -199,6 +200,15 @@ def _parse_appmsg(raw, sub_hint, depth=0):
         return {'kind': 'link', 'text': text, 'title': title,
                 'des': des, 'url': real_url, 'source': source}
 
+    # ---- 表情 / 动图（type 8）----
+    if sub == 8:
+        attach = app.find('appattach')
+        ext = _clean(_txt(attach, 'fileext')) if attach is not None else ''
+        md5 = _clean(_txt(attach, 'emoticonmd5')) if attach is not None else ''
+        label = '[动图]' if ext.lower() in ('gif', 'mp4') else '[表情]'
+        return {'kind': 'sticker', 'text': label, 'title': label,
+                'ext': ext, 'md5': md5}
+
     # ---- 文件 ----
     if sub in (6, 74):
         attach = app.find('appattach')
@@ -227,16 +237,21 @@ def _parse_appmsg(raw, sub_hint, depth=0):
         return {'kind': 'video_share', 'text': text, 'title': title,
                 'des': des, 'url': url, 'app': source}
 
-    # ---- 聊天记录 ----
-    if sub == 19:
+    # ---- 聊天记录 / 笔记（type 19、24）----
+    if sub in (19, 24):
         records = _parse_record(app)
-        text = f'[聊天记录] {title}'
+        is_note = sub == 24
+        if not title and des:
+            title = des.split('\n')[0][:60]
+        text = ('[笔记] ' if is_note else '[聊天记录] ') + (title or '')
         if records:
             text += f' · {len(records)} 条'
         elif des:
             text += f' · {des[:60]}'
-        return {'kind': 'chat_history', 'text': text, 'title': title,
-                'des': des, 'url': url, 'records': records}
+        return {'kind': 'chat_history', 'text': text,
+                'title': title or ('笔记' if is_note else ''),
+                'des': des, 'url': url, 'records': records,
+                'is_note': is_note}
 
     # ---- 转账 / 红包 ----
     if sub == 2000:
@@ -271,8 +286,28 @@ def _parse_appmsg(raw, sub_hint, depth=0):
         text = f'{title}' + (f' · {des}' if des else '')
         return {'kind': 'kf_template', 'text': text, 'title': title, 'des': des}
 
+    # ---- 群公告（type 87）----
+    if sub == 87:
+        ann = app.find('announcement')
+        inner = (ann.text or '').strip() if ann is not None else ''
+        items = []
+        if inner:
+            root2 = _parse_xml(inner)
+            if root2 is not None:
+                desc = _clean(_txt(root2, 'desc'))
+                if desc:
+                    items.append(desc)
+                for it in root2.findall('.//dataitem'):
+                    t = _clean(_txt(it, 'datatitle'))
+                    d = _clean(_txt(it, 'datadesc'))
+                    if t or d:
+                        items.append(t or d)
+        text = '[群公告]' + (f' · {len(items)} 项' if items else '')
+        return {'kind': 'announcement', 'text': text, 'title': '群公告',
+                'des': '；'.join(items[:5]), 'items': items}
+
     # ---- 版本不支持 / 系统提示 ----
-    if sub in (50, 51, 63, 87):
+    if sub in (50, 51, 63):
         text = title or des or '[该消息暂不支持展示]'
         return {'kind': 'unsupported', 'text': text, 'title': text}
 
@@ -295,10 +330,41 @@ def parse_content(local_type, raw, depth=0):
         return {'kind': {3: 'image', 34: 'voice', 43: 'video', 47: 'sticker'}[base],
                 'text': MEDIA_TEXT.get(base, '[消息]')}
     if base == 42:
-        return {'kind': 'card', 'text': '[名片]', 'title': _clean(raw)}
+        root = _parse_xml(raw)
+        if root is None and '<' in raw:
+            root = _parse_xml(raw[raw.find('<'):])
+        if root is None:
+            return {'kind': 'card', 'text': '[名片]', 'title': ''}
+        nickname = _clean(root.get('nickname'))
+        username = root.get('username') or ''
+        title = nickname or username or '名片'
+        return {'kind': 'card', 'text': f'[名片] {title}',
+                'title': nickname or title, 'des': username,
+                'username': username}
     if base == 48:
-        s = _clean(raw)
-        return {'kind': 'location', 'text': s or '[位置]', 'title': s}
+        root = _parse_xml(raw)
+        if root is None and '<' in raw:
+            root = _parse_xml(raw[raw.find('<'):])
+        el = root.find('.//location') if root is not None else None
+        if el is None:
+            s = _clean(raw)
+            return {'kind': 'location', 'text': s or '[位置]', 'title': s}
+        label = _clean(el.get('label'))
+        poiname = _clean(el.get('poiname'))
+        city = _clean(el.get('cityname'))
+        lat = (el.get('x') or '').strip()
+        lng = (el.get('y') or '').strip()
+        place = label or poiname or city or '位置'
+        text = f'[位置] {place}'
+        if city and city not in place:
+            text += f'（{city}）'
+        url = ''
+        if lat and lng:
+            url = f'https://uri.amap.com/marker?position={lng},{lat}'
+            if place and place != '位置':
+                url += '&name=' + quote(place)
+        return {'kind': 'location', 'text': text, 'title': place,
+                'des': city, 'lat': lat, 'lng': lng, 'url': url}
     if base == 50:
         return {'kind': 'call', 'text': '[语音通话]'}
     if base in (10000, 10002):

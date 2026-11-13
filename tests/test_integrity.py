@@ -115,9 +115,21 @@ def test_decrypt_skips_only_matching_size():
     print('  ok  跳过时校验输出大小')
 
 
+def test_sender_prefix_stripped_for_xml():
+    card = ('<msg bigheadimgurl="" username="wxid_card" nickname="张三" />')
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ChatStore(os.path.join(tmp, 'data'))
+        row = (1, 42, 1, 1767225600, 'wxid_demo:\n' + card, None)
+        m = store._parse('wxid_demo', {1: 'wxid_demo'}, {'wxid_demo': '备注'}, row)
+        assert m['kind'] == 'card', m
+        assert '张三' in m['text'] and 'wxid_demo:' not in m['text'], m
+    print('  ok  群聊发送者前缀（XML 类型）')
+
+
 def main():
     test_voice_uses_username_dir()
     test_record_image_hardlink()
+    test_sender_prefix_stripped_for_xml()
     test_chat_db_rels_dynamic()
     test_decrypt_rejects_partial_source()
     test_decrypt_skips_only_matching_size()

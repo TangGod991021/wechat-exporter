@@ -18,8 +18,9 @@ from app.core.media import (build_video_index, default_workers,
                             load_video_index, prepare_video_playback)
 
 TYPE_NAMES = {
-    1: 'text', 3: 'image', 34: 'voice', 43: 'video', 47: 'sticker',
-    48: 'location', 49: 'app', 50: 'call', 10000: 'system', 10002: 'system',
+    1: 'text', 3: 'image', 34: 'voice', 42: 'card', 43: 'video',
+    47: 'sticker', 48: 'location', 49: 'app', 50: 'call',
+    10000: 'system', 10002: 'system',
 }
 
 _zstd = zstd.ZstdDecompressor()
@@ -324,6 +325,14 @@ class ChatStore:
         else:
             display = '系统'
 
+        # 群聊消息常带 "发送者wxid:\n" 前缀；按真实 sender 精确剥离，
+        # 既支持自定义微信号，也避免 XML 类型因前缀解析失败
+        if sender:
+            for prefix in (sender + ':\r\n', sender + ':\n'):
+                if content.startswith(prefix):
+                    content = content[len(prefix):]
+                    break
+
         parsed = parse_content(ltype, content)
         kind = parsed.get('kind', 'text')
         text = parsed.get('text', '')
@@ -484,11 +493,22 @@ def _rich_body(m, uri_fn=None):
         meta = f'<div class="card-meta">{html.escape(c.get("size", ""))}</div>' if c.get('size') else ''
         return (f'<div class="card"><div class="card-title">📄 '
                 f'{html.escape(c.get("title", m.get("text", "")))}</div>{meta}</div>')
+    if kind == 'location':
+        href = _safe_href(c.get('url'))
+        title = html.escape(c.get('title') or m.get('text', ''))
+        if href:
+            title = (f'<a href="{html.escape(href)}" target="_blank" '
+                     f'rel="noopener noreferrer">{title}</a>')
+        des = (f'<div class="card-meta">{html.escape(c.get("des", ""))}</div>'
+               if c.get('des') else '')
+        return f'<div class="card"><div class="card-title">📍 {title}</div>{des}</div>'
     if kind in ('miniprogram', 'music', 'video_share', 'chat_history',
-                'transfer', 'redpacket', 'kf_template', 'app'):
+                'transfer', 'redpacket', 'kf_template', 'app', 'card',
+                'announcement'):
         icon = {'miniprogram': '🧩', 'music': '🎵', 'video_share': '🎬',
                 'chat_history': '💬', 'transfer': '💰', 'redpacket': '🧧',
-                'kf_template': '📢', 'app': '📦'}.get(kind, '📦')
+                'kf_template': '📢', 'app': '📦', 'card': '👤',
+                'announcement': '📢'}.get(kind, '📦')
         des = f'<div class="card-des">{linkify(c.get("des", ""))}</div>' if c.get('des') else ''
         app = f'<div class="card-meta">{html.escape(c.get("app", ""))}</div>' if c.get('app') else ''
         return (f'<div class="card"><div class="card-title">{icon} '
@@ -758,11 +778,23 @@ def _apply_playback(msgs, playback_dir):
                     r['media'] = p
 
 
+WINDOWS_RESERVED = {'con', 'prn', 'aux', 'nul'} |     {f'com{i}' for i in range(1, 10)} | {f'lpt{i}' for i in range(1, 10)}
+
+
+def _safe_name(name):
+    """Windows 合法文件名：替换非法字符、去尾点空格、避开保留设备名"""
+    s = re.sub(r'[\\/:*?"<>|]', '_', name or '').strip().rstrip('. ')
+    s = s[:50] or '会话'
+    if s.lower() in WINDOWS_RESERVED:
+        s = '_' + s
+    return s
+
+
 def export_chats(store, targets, formats, since, until, out_dir,
                  archive=True, progress=None):
     """导出多个会话；archive=True 时每个会话生成自包含文件夹
 
-    返回 {'files': [...], 'dir': 批次目录}
+    单个会话失败不会中断整批：错误写入返回值的 errors 与批次 manifest。
     """
     os.makedirs(out_dir, exist_ok=True)
     contacts = store.contacts()
@@ -772,9 +804,10 @@ def export_chats(store, targets, formats, since, until, out_dir,
         os.makedirs(batch_dir, exist_ok=True)
     files = []
     batch_chats = []
+    errors = []
     total = max(1, len(targets))
 
-    for idx, username in enumerate(targets, 1):
+    def export_one(idx, username):
         msgs = store.messages(username, since=since, until=until)
 
         # 只转码本次导出涉及的视频（HEVC -> H.264），不再全量预处理
@@ -798,7 +831,7 @@ def export_chats(store, targets, formats, since, until, out_dir,
                 _apply_playback(msgs, store.video_playback_dir)
 
         name = contacts.get(username, username)
-        safe = re.sub(r'[\\/:*?"<>|]', '_', name)[:50] or '会话'
+        safe = _safe_name(name)
         if archive:
             chat_dir = _unique_dir(batch_dir, safe)
             os.makedirs(chat_dir, exist_ok=True)
@@ -816,7 +849,9 @@ def export_chats(store, targets, formats, since, until, out_dir,
             chat_dir = None
             media_map, counts = {}, {}
             uri_fn = None
-            prefix = os.path.join(batch_dir, f'{safe}_{stamp}')
+            # 平铺模式附 username 摘要，避免同名会话互相覆盖
+            tag = hashlib.md5(username.encode()).hexdigest()[:6]
+            prefix = os.path.join(batch_dir, f'{safe}_{stamp}_{tag}')
             html_path = prefix + '.html'
 
         msgs_rel = _relativize(msgs, media_map) if archive else msgs
@@ -874,10 +909,21 @@ def export_chats(store, targets, formats, since, until, out_dir,
         if progress:
             progress(int(idx / total * 100), f'{name} 导出完成')
 
+    for idx, username in enumerate(targets, 1):
+        try:
+            export_one(idx, username)
+        except Exception as e:  # noqa: BLE001
+            name = contacts.get(username, username)
+            errors.append({'username': username, 'name': name,
+                           'error': f'{type(e).__name__}: {e}'})
+            if progress:
+                progress(int(idx / total * 100), f'{name} 导出失败：{e}')
+
     if archive:
         with open(os.path.join(batch_dir, 'manifest.json'), 'w',
                   encoding='utf-8') as f:
             json.dump({'exported_at': datetime.now().isoformat(timespec='seconds'),
-                       'chats': batch_chats}, f, ensure_ascii=False, indent=2)
+                       'chats': batch_chats, 'errors': errors},
+                      f, ensure_ascii=False, indent=2)
 
-    return {'files': files, 'dir': batch_dir}
+    return {'files': files, 'dir': batch_dir, 'errors': errors}

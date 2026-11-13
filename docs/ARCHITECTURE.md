@@ -152,7 +152,10 @@ page >1：[ciphertext 4016][IV 16][HMAC 64]
 ```
 
 - 引用（57）会递归解析被引用的内容
-- 聊天记录（19）解析 `<recorditem>` 的 `datalist`，支持展开明细
+- 聊天记录（19）与笔记（24）解析 `<recorditem>` 的 `datalist`（含 HTML 转义形式）
+- 表情/动图（8）输出 `[表情]` / `[动图]`；群公告（87）解析 `announcement` 的 `datalist`
+- 名片（42）保留昵称/username；位置（48）保留 label/poiname/城市并生成高德地图链接
+- 群聊消息前缀 `发送者:\n` 在解析前按真实 sender 精确剥离，兼容自定义微信号
 - 未知类型只输出标题或 `[应用消息]`，绝不泄漏 XML
 
 ## 8. 导出设计
@@ -164,7 +167,11 @@ page >1：[ciphertext 4016][IV 16][HMAC 64]
    - 只复制会话实际引用的媒体，按源路径去重
    - 硬链接优先（`os.link`），失败回退 `shutil.copy2`
    - HTML 使用相对路径
-2. **引用模式**：与旧版一致，HTML 使用 `file:///` 绝对路径，不复制媒体
+2. **引用模式**：与旧版一致，HTML 使用 `file:///` 绝对路径，不复制媒体；
+   文件名附加 username 摘要，避免同名会话互相覆盖
+
+单个会话导出失败不会中断整批：错误写入返回值 `errors` 与批次 `manifest.json`。
+Windows 非法字符、保留设备名（CON/NUL 等）会在文件名中处理。
 
 媒体命名：`YYYY-MM-DD_HH-MM-SS_哈希前8位.ext`（音频为 local_id）。
 

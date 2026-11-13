@@ -93,6 +93,59 @@ def test_unknown_never_leaks_xml():
     assert '<msg>' not in p['text'] and '<appmsg' not in p['text']
 
 
+STICKER_XML = ('<msg><appmsg><type>8</type><appattach>'
+               '<totallen>12345</totallen><emoticonmd5>aa</emoticonmd5>'
+               '<fileext>gif</fileext></appattach></appmsg></msg>')
+
+NOTE_XML = ('<msg><appmsg><title></title><des>房源信息\\n[视频]\\n[图片]</des>'
+            '<type>24</type><recorditem>'
+            '&lt;recordinfo&gt;&lt;datalist count="1"&gt;'
+            '&lt;dataitem datatype="2"&gt;'
+            '&lt;sourcename&gt;张三&lt;/sourcename&gt;'
+            '&lt;fullmd5&gt;0123456789abcdef0123456789abcdef&lt;/fullmd5&gt;'
+            '&lt;/dataitem&gt;&lt;/datalist&gt;&lt;/recordinfo&gt;'
+            '</recorditem></appmsg></msg>')
+
+ANNOUNCEMENT_XML = ('<msg><appmsg><type>87</type><announcement><![CDATA['
+                    '<group_notice_item><datalist count="1">'
+                    '<dataitem datatype="8"><datatitle>群公告内容.htm</datatitle>'
+                    '<datadesc>60B</datadesc></dataitem>'
+                    '</datalist></group_notice_item>]]></announcement></appmsg></msg>')
+
+CARD_XML = ('<msg bigheadimgurl="" smallheadimgurl="" username="wxid_card" '
+            'nickname="张三" alias="" />')
+
+LOCATION_XML = ('<msg><location x="26.616711" y="106.649033" scale="15" '
+                'label="贵州省贵阳市某大厦1楼" poiname="某菜馆" '
+                'cityname="贵阳市" /></msg>')
+
+
+def test_appmsg_new_types():
+    p = parse_content((8 << 32) | 49, STICKER_XML)
+    assert p['kind'] == 'sticker' and p['text'] == '[动图]', p
+
+    p = parse_content((24 << 32) | 49, NOTE_XML)
+    assert p['kind'] == 'chat_history' and p['is_note'] is True, p
+    assert len(p['records']) == 1 and p['records'][0]['kind'] == 'image', p
+    assert p['text'].startswith('[笔记]'), p
+
+    p = parse_content((87 << 32) | 49, ANNOUNCEMENT_XML)
+    assert p['kind'] == 'announcement', p
+    assert '群公告内容' in p['des'], p
+    assert p['text'].startswith('[群公告]'), p
+
+
+def test_card_and_location():
+    p = parse_content(42, CARD_XML)
+    assert p['kind'] == 'card' and '张三' in p['text'], p
+    assert p['username'] == 'wxid_card', p
+
+    p = parse_content(48, LOCATION_XML)
+    assert p['kind'] == 'location' and '某大厦' in p['text'], p
+    assert p['lat'] == '26.616711' and p['lng'] == '106.649033', p
+    assert p['url'].startswith('https://uri.amap.com/marker?position=106.649033,26.616711'), p
+
+
 def test_real_db_optional():
     db = os.environ.get('WECHAT_EXPORTER_DB', '')
     if not db or not os.path.exists(db):
@@ -136,5 +189,7 @@ if __name__ == '__main__':
     test_chat_history()
     test_pat()
     test_unknown_never_leaks_xml()
+    test_appmsg_new_types()
+    test_card_and_location()
     test_real_db_optional()
     print('PARSER TESTS OK')

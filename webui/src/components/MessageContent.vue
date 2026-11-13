@@ -109,6 +109,35 @@ function linkify(s: string) {
       </div>
     </template>
 
+    <!-- 名片 -->
+    <template v-else-if="kind === 'card'">
+      <div class="card">
+        <div class="card-title">👤 {{ content.title || msg.text }}</div>
+        <div v-if="content.des" class="card-meta">{{ content.des }}</div>
+      </div>
+    </template>
+
+    <!-- 群公告 -->
+    <template v-else-if="kind === 'announcement'">
+      <div class="card">
+        <div class="card-title">📢 {{ content.title || msg.text }}</div>
+        <div v-if="content.des" class="card-des">{{ content.des }}</div>
+      </div>
+    </template>
+
+    <!-- 位置 -->
+    <template v-else-if="kind === 'location'">
+      <a
+        class="card"
+        :href="content.url || undefined"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        <div class="card-title">📍 {{ content.title || msg.text }}</div>
+        <div v-if="content.des" class="card-meta">{{ content.des }}</div>
+      </a>
+    </template>
+
     <!-- 小程序 / 音乐 / 转账 / 红包等 -->
     <template v-else-if="cardKinds.includes(kind)">
       <div class="card">

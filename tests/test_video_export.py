@@ -81,7 +81,32 @@ def test_video_md5_collection_and_patch():
     print('OK: 仅转码所选视频，且重复导出命中缓存')
 
 
+def test_transcode_forces_yuv420p():
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, 'in.mp4')
+        dst = os.path.join(td, 'out.mp4')
+        _touch(src, b'hevc')
+        cmds = []
+
+        class R:
+            returncode = 0
+
+        def fake_run(cmd, **kwargs):
+            cmds.append(cmd)
+            _touch(cmd[-1], b'h264')  # 模拟 ffmpeg 写出临时文件
+            return R()
+
+        with mock.patch.object(media.proc, 'run', side_effect=fake_run):
+            assert media._transcode_one(src, dst, 'ffmpeg') is True
+        cmd = cmds[0]
+        assert '-pix_fmt' in cmd, cmd
+        assert cmd[cmd.index('-pix_fmt') + 1] == 'yuv420p', cmd
+        assert os.path.exists(dst)
+    print('OK: HEVC 转码强制 yuv420p')
+
+
 if __name__ == '__main__':
     test_only_selected_videos_are_transcoded()
     test_video_md5_collection_and_patch()
+    test_transcode_forces_yuv420p()
     print('VIDEO EXPORT TESTS OK')

@@ -874,6 +874,15 @@ onMounted(() => {
             </n-card>
 
             <n-card v-if="exported" title="导出完成" :bordered="false" class="soft-card" style="margin-top: 16px">
+              <n-alert
+                v-if="exported.errors?.length"
+                type="warning"
+                style="margin-bottom: 12px"
+              >
+                {{ exported.errors.length }} 个会话导出失败：{{
+                  exported.errors.map((e: any) => e.name).join('、')
+                }}
+              </n-alert>
               <div class="files">
                 <div v-for="f in exported.files" :key="f" class="file">
                   <n-icon><ChatbubblesOutline /></n-icon>
