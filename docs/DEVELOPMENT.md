@@ -73,8 +73,17 @@ npm run build
 
 ## 测试
 
+一键运行全部离线测试（CI 使用同一命令）：
+
+```bash
+.venv\Scripts\python tests\run_all.py
+```
+
+单独运行：
+
 ```bash
 .venv\Scripts\python tests\test_api_security.py   # 令牌 / Host / 路径白名单 / URL scheme
+.venv\Scripts\python tests\test_jobs_paging.py    # 任务互斥/取消、复合游标分页
 .venv\Scripts\python tests\test_integrity.py      # 语音、转发图片、解密原子化、分片
 .venv\Scripts\python tests\test_parser.py         # 富消息解析（离线合成数据）
 .venv\Scripts\python tests\test_prepare.py        # 按会话过滤媒体与标识收集
@@ -87,6 +96,8 @@ npm run build
 set WECHAT_EXPORTER_DB=D:\path\to\message_0.db
 .venv\Scripts\python tests\test_parser.py
 ```
+
+`.github/workflows/tests.yml` 在 push/PR 时自动执行后端离线测试与前端构建。
 
 ## 更新程序图标
 
