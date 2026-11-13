@@ -27,7 +27,7 @@ app.exe（pywebview 原生窗口）
 | `app/main.py` | 启动 FastAPI 线程 + pywebview 窗口 |
 | `app/config.py` | 配置读写、账号目录推导 |
 | `app/api/routes.py` | 路由、任务编排、静态资源挂载 |
-| `app/core/discovery.py` | 数据目录 / 账号 / 微信版本 / kvcomm code 发现 |
+| `app/core/discovery.py` | 数据目录 / 账号 / 微信版本 / kvcomm code 发现；集成 Everything（`es.exe` / HTTP JSON）快速定位 `xwechat_files`，不可用时回退本地递归扫描 |
 | `app/core/keys.py` | 密钥提取（两种策略） |
 | `app/core/decrypt.py` | SQLCipher 4 页面解密 |
 | `app/core/media.py` | 图片 / 语音 / 视频索引与转码 |

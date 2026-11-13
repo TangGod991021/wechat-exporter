@@ -13,6 +13,8 @@
 - 可执行文件更名为 `WeChatExporter.exe`，产物文件夹同步为 `dist\WeChatExporter\`
 - 补齐 Windows 文件属性：文件描述、产品名、版本、版权、原始文件名（`packaging/version_info.txt`）
 - 导出 HTML 图片支持点击放大预览（灯箱），聊天图片与转发记录图片均生效，Esc 或点击空白处关闭
+- 第一步新增「Everything 查找」：内置 Everything 便携版（`everything\`），未运行会静默启动（无窗口、不占任务栏、不弹 UAC），通过 `es.exe` 搜索 `db_storage` / `xwechat_files`，自动定位微信数据目录；退出程序时关闭由它启动的实例
+- 选中数据目录后支持递归查找账号，兼容微信更改存储路径、选中上层目录的情况
 
 ### 变更
 
