@@ -51,7 +51,7 @@ npm run build
 
 ## 打包
 
-推荐直接双击根目录的 `build-portable.bat`，自动完成依赖安装、前端构建和 PyInstaller 打包，产物在 `dist\微信聊天记录导出\`。
+推荐直接双击根目录的 `build-portable.bat`，自动完成依赖安装、前端构建和 PyInstaller 打包，产物在 `dist\WeChatExporter\`。
 
 手动执行：
 
@@ -61,6 +61,8 @@ npm run build
 ```
 
 打包模式下 `app/config.py` 会把 `BASE_DIR` 定位到 exe 同级目录，因此 `config.json`、`data\`、`media\`、`exports\` 都随程序文件夹一起移动。
+
+产物为 `dist\WeChatExporter\WeChatExporter.exe`。文件属性（描述、产品名、版本、版权）由 `packaging/version_info.txt` 提供；升级版本时需同时修改 `app/__init__.py` 与 `packaging/version_info.txt`。
 
 ## 测试
 

@@ -10,6 +10,8 @@
 - 打包产物附带 `USAGE.md`、`LICENSE.txt`、`NOTICE.md`
 - 全新程序图标（绿色底 + 聊天气泡 + 导出箭头）：exe、窗口、网页 favicon 与顶栏 Logo 统一使用
 - `tools/make_icon.py`：一键生成多尺寸 ICO / PNG / favicon
+- 可执行文件更名为 `WeChatExporter.exe`，产物文件夹同步为 `dist\WeChatExporter\`
+- 补齐 Windows 文件属性：文件描述、产品名、版本、版权、原始文件名（`packaging/version_info.txt`）
 
 ### 修复
 

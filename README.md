@@ -97,7 +97,7 @@ cd webui && npm run dev
 3. 清理旧产物并执行 PyInstaller 打包
 4. 把 `USAGE.md`、`LICENSE.txt`、`NOTICE.md` 一并写入产物
 
-产物位于 `dist\微信聊天记录导出\`，**把整个文件夹复制到其他电脑，双击其中的 exe 即可运行**。
+产物位于 `dist\WeChatExporter\`，**把整个文件夹复制到其他电脑，双击其中的 exe 即可运行**。
 
 - 目标电脑：Windows 10/11，需 WebView2 运行时（Win11 自带）
 - 首次运行会在 exe 同级目录生成 `config.json`、`data\`、`media\`、`exports\`
@@ -108,7 +108,7 @@ cd webui && npm run dev
 ```bash
 .venv\Scripts\pip install pyinstaller
 .venv\Scripts\pyinstaller packaging\app.spec --noconfirm --clean
-# 产物：dist\微信聊天记录导出\
+# 产物：dist\WeChatExporter\
 ```
 
 > 打包体积约 150–250 MB（含 WebView2 加载器与 Python 运行时）。
@@ -213,6 +213,7 @@ app/
 webui/                 # Vue 3 + Naive UI 前端
 packaging/app.spec     # PyInstaller 配置
 packaging/icon.ico     # 程序图标（多尺寸）
+packaging/version_info.txt  # 文件属性与版本信息
 tests/                 # 测试
 tools/                 # 辅助脚本（界面截图等）
 docs/                  # 架构、使用、开发文档

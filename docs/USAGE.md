@@ -3,7 +3,7 @@
 ## 0. 便携版运行（复制到其他电脑）
 
 1. 把整个 `微信聊天记录导出` 文件夹复制到目标电脑（不要只复制 exe）
-2. 双击 `微信聊天记录导出.exe`
+2. 双击 `WeChatExporter.exe`
 3. 首次运行会在 exe 同级目录生成 `config.json`、`data\`、`media\`、`exports\`
 
 要求：Windows 10/11 + WebView2 运行时（Win11 自带）。图片 / 视频处理需另外安装 FFmpeg 并加入 `PATH`。

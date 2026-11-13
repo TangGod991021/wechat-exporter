@@ -38,13 +38,14 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='微信聊天记录导出',
+    name='WeChatExporter',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     console=False,
     icon=os.path.join(ROOT, 'packaging', 'icon.ico'),
+    version=os.path.join(ROOT, 'packaging', 'version_info.txt'),
 )
 
 coll = COLLECT(
@@ -53,5 +54,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name='微信聊天记录导出',
+    name='WeChatExporter',
 )
