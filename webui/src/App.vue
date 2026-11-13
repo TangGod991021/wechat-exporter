@@ -86,6 +86,16 @@ function resetSelection() {
   sessions.value = []
   picked.value = []
   preparedSig.value = ''
+  exported.value = null
+  previewShow.value = false
+  previewSession.value = null
+  messages.value = []
+  previewHasMore.value = true
+  activeJob.value = ''
+  jobs.keys = { progress: 0, status: '', message: '', logs: [] }
+  jobs.core = { progress: 0, status: '', message: '', logs: [] }
+  jobs.prepare = { progress: 0, status: '', message: '', logs: [] }
+  jobs.export = { progress: 0, status: '', message: '', logs: [] }
 }
 
 function selectAccount(a: any) {
@@ -142,6 +152,10 @@ async function runJob(kind: string, starter: () => Promise<any>) {
       jobs[kind] = j
     })
     jobs[kind] = done
+    if (done.status === 'cancelled') {
+      message.warning('任务已取消')
+      return null
+    }
     await loadBoot()
     return done
   } catch (e: any) {
@@ -151,15 +165,42 @@ async function runJob(kind: string, starter: () => Promise<any>) {
   }
 }
 
+function jobStatusText(status: string) {
+  return status === 'running'
+    ? '进行中'
+    : status === 'done'
+      ? '已完成'
+      : status === 'cancelled'
+        ? '已取消'
+        : '失败'
+}
+
+async function cancelJob(kind: string) {
+  const id = jobs[kind]?.id
+  if (!id) return
+  try {
+    await api.cancelJob(id)
+    message.warning('已请求取消，将在当前步骤结束后停止')
+  } catch (e: any) {
+    message.error('取消失败：' + e.message)
+  }
+}
+
 function doKeys() {
-  return runJob('keys', () => api.startKeys(account.value.folder))
+  return runJob('keys', () => api.startKeys(account.value.folder)).then((done) => {
+    if (done) sessionsLoaded.value = false
+    return done
+  })
 }
 
 function runKeysStep() {
   if (!account.value) return null
   // 已提取过密钥时只需补建会话索引，不必再次读取微信内存
   if (account.value.has_keys) {
-    return runJob('core', () => api.startCore(account.value.folder))
+    return runJob('core', () => api.startCore(account.value.folder)).then((done) => {
+      if (done) sessionsLoaded.value = false
+      return done
+    })
   }
   return doKeys()
 }
@@ -248,24 +289,43 @@ const previewSession = ref<any>(null)
 const messages = ref<any[]>([])
 const previewLoading = ref(false)
 
+const previewHasMore = ref(true)
+let previewToken = 0
+
 async function preview(s: any) {
+  const token = ++previewToken
   previewSession.value = s
   messages.value = []
+  previewHasMore.value = true
   previewShow.value = true
-  await loadMore()
+  await fetchMessages(token)
 }
 
 async function loadMore() {
+  if (previewLoading.value || !previewHasMore.value) return
+  const token = ++previewToken
+  await fetchMessages(token)
+}
+
+async function fetchMessages(token: number) {
   if (!account.value || !previewSession.value) return
   previewLoading.value = true
   try {
-    const before = messages.value.length ? messages.value[0].ts : undefined
-    const r = await api.chat(account.value.folder, previewSession.value.username, 100, before)
+    const first = messages.value[0]
+    const r = await api.chat(
+      account.value.folder,
+      previewSession.value.username,
+      100,
+      first ? first.ts : undefined,
+      first ? first.local_id : undefined,
+    )
+    if (token !== previewToken) return
     messages.value = [...r.messages, ...messages.value]
+    previewHasMore.value = r.has_more !== false && r.messages.length > 0
   } catch (e: any) {
-    message.error('加载消息失败：' + e.message)
+    if (token === previewToken) message.error('加载消息失败：' + e.message)
   } finally {
-    previewLoading.value = false
+    if (token === previewToken) previewLoading.value = false
   }
 }
 
@@ -554,9 +614,16 @@ onMounted(() => {
 
             <div v-if="activeJob && jobs[activeJob]?.status" class="console">
               <div class="console-head">
-                <span>{{ jobs[activeJob].status === 'running' ? '进行中' : jobs[activeJob].status === 'done' ? '已完成' : '失败' }}</span>
+                <span>{{ jobStatusText(jobs[activeJob].status) }}</span>
                 <span>{{ jobs[activeJob].message }}</span>
                 <span v-if="jobs[activeJob].progress" class="pct">{{ jobs[activeJob].progress }}%</span>
+                <n-button
+                  v-if="jobs[activeJob].status === 'running'"
+                  size="tiny"
+                  tertiary
+                  type="error"
+                  @click="cancelJob(activeJob)"
+                >取消</n-button>
               </div>
               <div class="console-body">
                 <div v-for="(l, i) in jobs[activeJob].logs.slice(-6)" :key="i">{{ l }}</div>
@@ -685,9 +752,16 @@ onMounted(() => {
 
             <div v-if="activeJob && jobs[activeJob]?.status" class="console">
               <div class="console-head">
-                <span>{{ jobs[activeJob].status === 'running' ? '进行中' : jobs[activeJob].status === 'done' ? '已完成' : '失败' }}</span>
+                <span>{{ jobStatusText(jobs[activeJob].status) }}</span>
                 <span>{{ jobs[activeJob].message }}</span>
                 <span v-if="jobs[activeJob].progress" class="pct">{{ jobs[activeJob].progress }}%</span>
+                <n-button
+                  v-if="jobs[activeJob].status === 'running'"
+                  size="tiny"
+                  tertiary
+                  type="error"
+                  @click="cancelJob(activeJob)"
+                >取消</n-button>
               </div>
               <div class="console-body">
                 <div v-for="(l, i) in jobs[activeJob].logs.slice(-6)" :key="i">{{ l }}</div>
@@ -779,8 +853,25 @@ onMounted(() => {
                   style="width: 260px"
                 />
                 <span class="hint">{{ jobs.export.message }}</span>
+                <n-button size="tiny" tertiary type="error" @click="cancelJob('export')">取消</n-button>
               </div>
             </div>
+
+            <n-card
+              v-if="jobs.export.status === 'error' || jobs.export.status === 'cancelled'"
+              :title="jobs.export.status === 'cancelled' ? '导出已取消' : '导出失败'"
+              :bordered="false"
+              class="soft-card"
+              style="margin-top: 16px"
+            >
+              <p class="hint">{{ jobs.export.message || jobs.export.error }}</p>
+              <div v-if="jobs.export.logs?.length" class="console" style="margin-top: 8px">
+                <div class="console-body">
+                  <div v-for="(l, i) in jobs.export.logs.slice(-8)" :key="i">{{ l }}</div>
+                </div>
+              </div>
+              <n-button size="small" type="primary" style="margin-top: 10px" @click="doExport">重试</n-button>
+            </n-card>
 
             <n-card v-if="exported" title="导出完成" :bordered="false" class="soft-card" style="margin-top: 16px">
               <div class="files">
@@ -820,8 +911,14 @@ onMounted(() => {
       >
         <div class="chat-view">
           <div v-if="messages.length" style="text-align: center; margin-bottom: 8px">
-            <n-button size="tiny" quaternary :loading="previewLoading" @click="loadMore">
-              加载更早的消息
+            <n-button
+              size="tiny"
+              quaternary
+              :loading="previewLoading"
+              :disabled="!previewHasMore"
+              @click="loadMore"
+            >
+              {{ previewHasMore ? '加载更早的消息' : '已加载全部' }}
             </n-button>
           </div>
           <div

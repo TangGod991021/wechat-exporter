@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
@@ -15,7 +16,7 @@ from app import __version__
 from app.config import load_config, save_config, account_paths
 from app.core import discovery, keys, decrypt, media, prepare
 from app.core.export import ChatStore, export_chats
-from app.core.jobs import JobManager
+from app.core.jobs import JobManager, JobBusy
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 DIST = BASE_DIR / 'webui' / 'dist'
@@ -159,6 +160,12 @@ def create_app(token: str = ''):
     def cfg():
         return app.state.cfg
 
+    def start_job(kind, fn):
+        try:
+            return {'job': mgr.start(kind, fn)}
+        except JobBusy as e:
+            raise HTTPException(409, str(e))
+
     @app.middleware('http')
     async def guard(request: Request, call_next):
         """API 鉴权 + 防 DNS rebinding（静态页面本身不拦截）"""
@@ -253,7 +260,7 @@ def create_app(token: str = ''):
                     'missing': meta.get('missing', []), 'stats': meta.get('stats'),
                     'core': core}
 
-        return {'job': mgr.start('keys', run)}
+        return start_job('keys', run)
 
     @app.post('/api/core')
     def start_core(body: AccountBody):
@@ -275,7 +282,7 @@ def create_app(token: str = ''):
             job.update(100, f"会话数据就绪（成功 {res['ok']}，跳过 {res['skipped']}）")
             return res
 
-        return {'job': mgr.start('core', run)}
+        return start_job('core', run)
 
     @app.post('/api/decrypt')
     def start_decrypt(body: AccountBody):
@@ -295,7 +302,7 @@ def create_app(token: str = ''):
             job.update(100, f"成功 {res['ok']}，跳过 {res['skipped']}，失败 {res['failed']}")
             return res
 
-        return {'job': mgr.start('decrypt', run)}
+        return start_job('decrypt', run)
 
     @app.post('/api/media')
     def start_media(body: MediaBody):
@@ -329,7 +336,7 @@ def create_app(token: str = ''):
             job.update(100, '媒体处理完成')
             return result
 
-        return {'job': mgr.start('media', run)}
+        return start_job('media', run)
 
     @app.post('/api/prepare')
     def start_prepare(body: PrepareBody):
@@ -361,7 +368,7 @@ def create_app(token: str = ''):
             job.update(100, '所选会话数据准备完成')
             return result
 
-        return {'job': mgr.start('prepare', run)}
+        return start_job('prepare', run)
 
     @app.get('/api/sessions')
     def sessions(account: str):
@@ -376,15 +383,37 @@ def create_app(token: str = ''):
         return {'sessions': items}
 
     @app.get('/api/chat')
-    def chat(account: str, username: str, limit: int = 100, before: int | None = None):
+    def chat(account: str, username: str, limit: int = 100,
+             before: int | None = None, before_id: int | None = None):
+        if limit < 1 or limit > 500:
+            raise HTTPException(400, 'limit 必须在 1-500 之间')
         c = cfg()
         acc = get_account(c, account)
         store = make_store(c, acc)
-        msgs = store.messages(username, limit=limit, before_ts=before)
-        return {'messages': msgs}
+        msgs = store.messages(username, limit=limit, before_ts=before,
+                              before_id=before_id)
+        return {'messages': msgs, 'has_more': len(msgs) >= limit}
 
     @app.post('/api/export')
     def start_export(body: ExportBody):
+        allowed = {'html', 'txt', 'json', 'csv'}
+        bad = set(body.formats or []) - allowed
+        if not body.formats or bad:
+            raise HTTPException(400, f'不支持的导出格式：{sorted(bad) or "空"}')
+        if not body.targets:
+            raise HTTPException(400, '请先选择要导出的会话')
+        if body.since:
+            try:
+                datetime.strptime(body.since, '%Y-%m-%d')
+            except ValueError:
+                raise HTTPException(400, '起始日期格式应为 YYYY-MM-DD')
+        if body.until:
+            try:
+                datetime.strptime(body.until, '%Y-%m-%d')
+            except ValueError:
+                raise HTTPException(400, '结束日期格式应为 YYYY-MM-DD')
+        if body.since and body.until and body.since > body.until:
+            raise HTTPException(400, '起始日期不能晚于结束日期')
         c = cfg()
         acc = get_account(c, body.account)
 
@@ -404,7 +433,7 @@ def create_app(token: str = ''):
             job.update(100, f"已生成 {len(result['files'])} 个文件")
             return result
 
-        return {'job': mgr.start('export', run)}
+        return start_job('export', run)
 
     @app.get('/api/jobs/{job_id}')
     def job(job_id: str):
@@ -412,6 +441,12 @@ def create_app(token: str = ''):
         if not data:
             raise HTTPException(404, '任务不存在')
         return data
+
+    @app.post('/api/jobs/{job_id}/cancel')
+    def cancel_job(job_id: str):
+        if not mgr.cancel(job_id):
+            raise HTTPException(404, '任务不存在或已结束')
+        return {'ok': True}
 
     @app.post('/api/open-folder')
     @app.post('/api/open-path')

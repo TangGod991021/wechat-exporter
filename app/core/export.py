@@ -273,7 +273,8 @@ class ChatStore:
         return hits[0] if hits else None
 
     # ---------- 消息 ----------
-    def messages(self, username, since=None, until=None, limit=None, before_ts=None):
+    def messages(self, username, since=None, until=None, limit=None,
+                 before_ts=None, before_id=None):
         db, table = self.find_table(username)
         if not table:
             return []
@@ -287,9 +288,15 @@ class ChatStore:
             if until:
                 conds.append('create_time <= ?')
                 params.append(int(datetime.strptime(until, '%Y-%m-%d').timestamp()) + 86399)
-            if before_ts:
-                conds.append('create_time < ?')
-                params.append(int(before_ts))
+            if before_ts is not None:
+                if before_id is not None:
+                    # 复合游标：同一秒内的消息按 local_id 继续向下翻
+                    conds.append('(create_time < ? or '
+                                 '(create_time = ? and local_id < ?))')
+                    params += [int(before_ts), int(before_ts), int(before_id)]
+                else:
+                    conds.append('create_time < ?')
+                    params.append(int(before_ts))
             where = ('where ' + ' and '.join(conds)) if conds else ''
             sql = f'select local_id, local_type, real_sender_id, create_time, ' \
                   f'message_content, packed_info_data from "{table}" {where} ' \

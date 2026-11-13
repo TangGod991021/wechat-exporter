@@ -58,15 +58,25 @@ export const api = {
     }),
   sessions: (account: string) =>
     request('/api/sessions?account=' + encodeURIComponent(account)),
-  chat: (account: string, username: string, limit = 100, before?: number) =>
+  chat: (
+    account: string,
+    username: string,
+    limit = 100,
+    before?: number,
+    beforeId?: number,
+  ) =>
     request(
       `/api/chat?account=${encodeURIComponent(account)}&username=${encodeURIComponent(
         username,
-      )}&limit=${limit}` + (before ? `&before=${before}` : ''),
+      )}&limit=${limit}` +
+        (before !== undefined ? `&before=${before}` : '') +
+        (beforeId !== undefined ? `&before_id=${beforeId}` : ''),
     ),
   startExport: (body: any) =>
     request('/api/export', { method: 'POST', body: JSON.stringify(body) }),
   job: (id: string) => request('/api/jobs/' + id),
+  cancelJob: (id: string) =>
+    request('/api/jobs/' + id + '/cancel', { method: 'POST' }),
   openFolder: (path: string) =>
     request('/api/open-folder', { method: 'POST', body: JSON.stringify({ path }) }),
 }
@@ -80,7 +90,7 @@ export async function waitJob(
   while (true) {
     const job = await api.job(id)
     onTick?.(job)
-    if (job.status === 'done') return job
+    if (job.status === 'done' || job.status === 'cancelled') return job
     if (job.status === 'error') throw new Error(job.error || '任务失败')
     await new Promise((r) => setTimeout(r, interval))
   }

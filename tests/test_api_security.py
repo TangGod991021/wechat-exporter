@@ -94,6 +94,25 @@ def main():
         assert _safe_href(bad) == '', bad
     print('  ok  链接 scheme 过滤')
 
+    # 6. 参数校验：非法 limit / 格式 / 日期在进入任务前返回 400
+    h = {'X-Auth-Token': TOKEN}
+    r = client.get('/api/chat', params={'account': 'x', 'username': 'y', 'limit': 0},
+                   headers=h)
+    assert r.status_code == 400, r.status_code
+    r = client.post('/api/export',
+                    json={'account': 'x', 'targets': ['a'], 'formats': ['pdf']},
+                    headers=h)
+    assert r.status_code == 400, r.status_code
+    r = client.post('/api/export',
+                    json={'account': 'x', 'targets': ['a'], 'formats': ['html'],
+                          'since': '2024/1/1'}, headers=h)
+    assert r.status_code == 400, r.status_code
+    r = client.post('/api/export',
+                    json={'account': 'x', 'targets': ['a'], 'formats': ['html'],
+                          'since': '2024-02-01', 'until': '2024-01-01'}, headers=h)
+    assert r.status_code == 400, r.status_code
+    print('  ok  导出/预览参数校验')
+
     print('API 安全测试全部通过')
 
 

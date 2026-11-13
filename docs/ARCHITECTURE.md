@@ -20,6 +20,7 @@ app.exe（pywebview 原生窗口）
        ├─ /api/chat             消息预览
        ├─ /api/export           导出（后台任务）
        ├─ /api/jobs/{id}        任务进度
+       ├─ /api/jobs/{id}/cancel 请求取消任务
        ├─ /api/open-path        用系统程序打开白名单目录
        └─ /api/file             本地媒体文件（白名单）
 ```
@@ -39,7 +40,7 @@ app.exe（pywebview 原生窗口）
 | `app/core/media.py` | 图片 / 语音 / 视频索引与转码 |
 | `app/core/message_parser.py` | 富消息 XML 解析 |
 | `app/core/export.py` | 会话解析、HTML 渲染、归档导出 |
-| `app/core/jobs.py` | 后台任务与进度 |
+| `app/core/jobs.py` | 后台任务与进度；同类型任务互斥、进度回调处检查取消 |
 
 ## 3. 微信 4.x 数据结构要点
 
