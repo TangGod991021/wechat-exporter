@@ -13,6 +13,10 @@
 - 可执行文件更名为 `WeChatExporter.exe`，产物文件夹同步为 `dist\WeChatExporter\`
 - 补齐 Windows 文件属性：文件描述、产品名、版本、版权、原始文件名（`packaging/version_info.txt`）
 
+### 变更
+
+- 视频转码由「准备数据」阶段改为「导出」阶段按需执行：只转码所选会话（及时间范围）内涉及的 HEVC 视频，已转码结果缓存复用；第 2 步仅建立视频索引
+
 ### 修复
 
 - 打包后 `config.json` 与 `data/`、`media/`、`exports/` 固定落在 exe 同级目录，整个文件夹可直接拷贝到其他电脑运行

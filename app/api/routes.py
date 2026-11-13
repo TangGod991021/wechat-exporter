@@ -66,7 +66,8 @@ def make_store(cfg, account):
         video_roots=[os.path.join(base, 'msg', 'video'),
                      os.path.join(base, 'msg', 'attach')],
         video_cache=str(Path(paths['images']).parent / 'video_index.json'),
-        video_playback_dir=str(Path(paths['images']).parent / 'videos_h264'))
+        video_playback_dir=str(Path(paths['images']).parent / 'videos_h264'),
+        ffmpeg=c.get('ffmpeg', 'ffmpeg'))
 
 
 def account_state(cfg, account):
@@ -212,7 +213,6 @@ def create_app():
             codes = discovery.find_kvcomm_codes()
             db = Path(paths['data']) / 'message' / 'media_0.db'
             video_cache = str(Path(paths['images']).parent / 'video_index.json')
-            video_playback_dir = str(Path(paths['images']).parent / 'videos_h264')
             job.update(1, '正在分析已解密文件...')
             result = media.prepare_media(
                 attach_dir=attach,
@@ -221,7 +221,6 @@ def create_app():
                 media_db=str(db),
                 wxid=acc['username'],
                 codes=codes,
-                ffmpeg=c.get('ffmpeg', 'ffmpeg'),
                 workers=body.workers,
                 do_images=body.images,
                 do_hevc=body.hevc,
@@ -230,8 +229,6 @@ def create_app():
                 video_roots=[os.path.join(acc['base_dir'], 'msg', 'video'),
                              os.path.join(acc['base_dir'], 'msg', 'attach')],
                 video_cache=video_cache,
-                video_playback_dir=video_playback_dir,
-                transcode_videos=body.videos,
                 progress=lambda p, m='': job.update(p, m),
             )
             job.update(100, '媒体处理完成')
@@ -266,12 +263,17 @@ def create_app():
 
         def run(job):
             store = make_store(c, acc)
-            job.update(2, f'导出 {len(body.targets)} 个会话...')
+            if store.video_roots:
+                job.update(1, '正在更新视频索引...')
+                store.refresh_video_index(
+                    progress=lambda p: job.update(
+                        1 + int(p * 0.06), f'正在更新视频索引… {p}%'))
+            job.update(8, f'导出 {len(body.targets)} 个会话（视频按需转码）...')
             result = export_chats(
                 store, body.targets, body.formats,
                 body.since, body.until, c['export_dir'],
                 archive=body.archive,
-                progress=lambda p, m='': job.update(p, m))
+                progress=lambda p, m='': job.update(8 + int(p * 0.9), m))
             job.update(100, f"已生成 {len(result['files'])} 个文件")
             return result
 

@@ -14,7 +14,8 @@ from datetime import datetime
 import zstandard as zstd
 
 from app.core.message_parser import parse_content, split_local_type
-from app.core.media import load_video_index
+from app.core.media import (build_video_index, default_workers,
+                            load_video_index, prepare_video_playback)
 
 TYPE_NAMES = {
     1: 'text', 3: 'image', 34: 'voice', 43: 'video', 47: 'sticker',
@@ -39,7 +40,8 @@ class ChatStore:
     """一个账号的已解密数据访问入口"""
 
     def __init__(self, data_dir, images_dir='', voices_dir='', my_wxid='',
-                 video_roots=None, video_cache='', video_playback_dir=''):
+                 video_roots=None, video_cache='', video_playback_dir='',
+                 ffmpeg='ffmpeg'):
         self.data_dir = data_dir
         self.images_dir = images_dir
         self.voices_dir = voices_dir
@@ -47,6 +49,7 @@ class ChatStore:
         self.video_roots = video_roots or []
         self.video_cache = video_cache
         self.video_playback_dir = video_playback_dir
+        self.ffmpeg = ffmpeg
         self.session_db = os.path.join(data_dir, 'session', 'session.db')
         self.contact_db = os.path.join(data_dir, 'contact', 'contact.db')
         self.media_db = os.path.join(data_dir, 'message', 'media_0.db')
@@ -176,6 +179,15 @@ class ChatStore:
                 self._video_index = {}
         return self._video_index
 
+    def refresh_video_index(self, progress=None):
+        """按 mtime/size 增量更新视频索引，导出前调用以确保新视频可定位。"""
+        if not self.video_roots:
+            self._video_index = {}
+            return {}
+        self._video_index = build_video_index(
+            self.video_roots, self.video_cache, progress=progress)
+        return self._video_index
+
     def _find_video(self, md5):
         md5 = (md5 or '').lower()
         if not md5:
@@ -243,12 +255,14 @@ class ChatStore:
         text = parsed.get('text', '')
         media = ''
         poster = ''
+        video_md5 = ''
 
         if kind == 'chat_history':
             for rec in parsed.get('records', []):
                 md5 = rec.get('md5') or rec.get('thumb_md5')
                 if rec.get('kind') == 'video':
                     rec['media'] = self._find_video(md5) or ''
+                    rec['video_md5'] = md5 or ''
                 elif rec.get('kind') == 'image':
                     rec['media'] = self._find_image(md5) or ''
                 else:
@@ -275,6 +289,7 @@ class ChatStore:
         elif base == 43:
             m = re.search(r'md5="([0-9a-fA-F]{32})"', content)
             md5 = m.group(1).lower() if m else None
+            video_md5 = md5 or ''
             media = self._find_video(md5) or ''
             if media:
                 stem = os.path.splitext(media)[0]
@@ -303,6 +318,7 @@ class ChatStore:
             'text': text,
             'media': media,
             'poster': poster,
+            'video_md5': video_md5,
             'content': parsed,
         }
 
@@ -578,6 +594,36 @@ def _relativize(msgs, media_map):
     return out
 
 
+def _video_md5s(msgs):
+    """收集消息中被引用的视频 md5（含转发聊天记录里的视频）。"""
+    found = set()
+    for m in msgs:
+        if m.get('video_md5'):
+            found.add(m['video_md5'])
+        for r in (m.get('content') or {}).get('records') or []:
+            if r.get('video_md5'):
+                found.add(r['video_md5'])
+    return found
+
+
+def _apply_playback(msgs, playback_dir):
+    """转码完成后，把消息里的视频路径指向 H.264 缓存文件。"""
+    def patched(md5):
+        p = os.path.join(playback_dir, md5 + '.mp4')
+        return p if os.path.exists(p) else ''
+
+    for m in msgs:
+        if m.get('video_md5'):
+            p = patched(m['video_md5'])
+            if p:
+                m['media'] = p
+        for r in (m.get('content') or {}).get('records') or []:
+            if r.get('video_md5'):
+                p = patched(r['video_md5'])
+                if p:
+                    r['media'] = p
+
+
 def export_chats(store, targets, formats, since, until, out_dir,
                  archive=True, progress=None):
     """导出多个会话；archive=True 时每个会话生成自包含文件夹
@@ -596,6 +642,27 @@ def export_chats(store, targets, formats, since, until, out_dir,
 
     for idx, username in enumerate(targets, 1):
         msgs = store.messages(username, since=since, until=until)
+
+        # 只转码本次导出涉及的视频（HEVC -> H.264），不再全量预处理
+        tc_share = 0.0
+        md5s = _video_md5s(msgs)
+        if md5s and store.video_playback_dir:
+            video_idx = {md5: src for md5, src in store.video_index().items()
+                         if md5 in md5s}
+            if video_idx:
+                tc_share = 0.3
+
+                def tc_progress(p, msg, _no=idx):
+                    if progress:
+                        overall = ((_no - 1) + p / 100 * tc_share) / total * 100
+                        progress(int(overall), msg)
+
+                prepare_video_playback(
+                    video_idx, store.video_cache, store.video_playback_dir,
+                    store.ffmpeg, workers=default_workers(),
+                    progress=tc_progress, only_md5s=md5s)
+                _apply_playback(msgs, store.video_playback_dir)
+
         name = contacts.get(username, username)
         safe = re.sub(r'[\\/:*?"<>|]', '_', name)[:50] or '会话'
         if archive:
@@ -604,7 +671,8 @@ def export_chats(store, targets, formats, since, until, out_dir,
 
             def cp_progress(p, msg):
                 if progress:
-                    overall = ((idx - 1) + p / 100 * 0.8) / total * 100
+                    overall = ((idx - 1) + tc_share
+                               + p / 100 * (0.8 - tc_share)) / total * 100
                     progress(int(overall), msg)
             media_map, counts = _collect_media(msgs, chat_dir, cp_progress)
             uri_fn = lambda p: media_map.get(p) or _default_uri(p)  # noqa: E731

@@ -367,9 +367,10 @@ def _transcode_one(src, dst, ffmpeg):
 
 
 def prepare_video_playback(video_index, cache_path, playback_dir, ffmpeg='ffmpeg',
-                           workers=4, progress=None):
+                           workers=4, progress=None, only_md5s=None):
     """把 HEVC 视频转码为 H.264 缓存，保证浏览器/WebView 可播放
 
+    only_md5s 非空时只处理指定视频（导出时按所选会话过滤）。
     codec 结果写回 video_index.json，避免每次重新探测。
     """
     os.makedirs(playback_dir, exist_ok=True)
@@ -383,8 +384,11 @@ def prepare_video_playback(video_index, cache_path, playback_dir, ffmpeg='ffmpeg
     codecs = {v['md5']: v.get('codec', '') for v in cache.values() if v.get('md5')}
 
     hevc_tasks = []
-    hevc = skipped = 0
+    hevc = skipped = selected = 0
     for md5, src in video_index.items():
+        if only_md5s is not None and md5 not in only_md5s:
+            continue
+        selected += 1
         codec = codecs.get(md5)
         if not codec:
             codec = _probe_codec(ffmpeg, src)
@@ -415,6 +419,8 @@ def prepare_video_playback(video_index, cache_path, playback_dir, ffmpeg='ffmpeg
 
     ok = fail = 0
     if hevc_tasks:
+        if progress:
+            progress(0, f'视频转码 0/{len(hevc_tasks)}')
         with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = [ex.submit(_transcode_one, s, d, ffmpeg) for s, d in hevc_tasks]
             for i, f in enumerate(futs, 1):
@@ -422,10 +428,11 @@ def prepare_video_playback(video_index, cache_path, playback_dir, ffmpeg='ffmpeg
                     ok += 1
                 else:
                     fail += 1
-                if progress and i % 5 == 0:
+                if progress:
                     progress(int(i / len(hevc_tasks) * 100),
                              f'视频转码 {i}/{len(hevc_tasks)}')
-    return {'hevc': hevc, 'transcoded': ok, 'skipped': skipped, 'failed': fail}
+    return {'selected': selected, 'hevc': hevc, 'transcoded': ok,
+            'skipped': skipped, 'failed': fail}
 
 
 def _plan_voices(media_db, voices_dir):
@@ -469,10 +476,9 @@ class _Progress:
 
 
 def prepare_media(attach_dir, images_dir, voices_dir, media_db, wxid, codes,
-                  ffmpeg='ffmpeg', workers=None, do_images=True, do_hevc=True,
+                  workers=None, do_images=True, do_hevc=True,
                   do_voices=True, do_videos=True, video_roots=None,
-                  video_cache='', video_playback_dir='', transcode_videos=True,
-                  progress=None):
+                  video_cache='', progress=None):
     """并发执行媒体处理，返回统计"""
     workers = workers or default_workers()
     progress = progress or (lambda p, m='': None)
@@ -560,18 +566,11 @@ def prepare_media(attach_dir, images_dir, voices_dir, media_db, wxid, codes,
         prog.report('videos', 0, '正在建立视频索引...')
         idx = build_video_index(
             video_roots, video_cache,
-            progress=lambda p: prog.report('videos', p / 100 * 0.4,
+            progress=lambda p: prog.report('videos', p / 100,
                                            f'视频索引 {p}%'))
         result['videos'] = {'total': len(idx)}
-        if transcode_videos and video_playback_dir:
-            prog.report('videos', 0.4, '正在转码 HEVC 视频...')
-            meta = prepare_video_playback(
-                idx, video_cache, video_playback_dir, ffmpeg,
-                workers=max(2, min(6, (os.cpu_count() or 4) - 2)),
-                progress=lambda p, m='': prog.report(
-                    'videos', 0.4 + p / 100 * 0.6, m))
-            result['videos'].update(meta)
-        prog.report('videos', 1, f"视频就绪，共 {len(idx)} 个")
+        prog.report('videos', 1,
+                    f'视频索引完成，共 {len(idx)} 个（导出时按需转码）')
 
     with ThreadPoolExecutor(max_workers=3) as ex:
         futures = []

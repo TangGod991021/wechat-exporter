@@ -304,6 +304,7 @@ def main():
         boxes.nth(1).click()
         page.get_by_role('button', name='下一步').click()
         page.get_by_text('导出格式').wait_for()
+        page.set_viewport_size({'width': 1280, 'height': 900})
         page.wait_for_timeout(300)
         scroll_main(page)
         shot(page, '06-export-light.png')

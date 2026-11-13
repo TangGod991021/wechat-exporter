@@ -531,7 +531,7 @@ onMounted(() => {
                 <div class="prep-desc">
                   已解出 {{ account?.images_decoded || 0 }} 个图片文件
                   <template v-if="account?.videos_indexed">
-                    · 视频 {{ account.videos_indexed }} 个
+                    · 视频 {{ account.videos_indexed }} 个（导出时按需转码）
                   </template>
                 </div>
                 <n-tag :type="account?.images_decoded ? 'success' : 'default'" size="small" round>
@@ -545,7 +545,7 @@ onMounted(() => {
                   style="margin: 10px 0 4px"
                 />
                 <n-button size="small" secondary :disabled="busy" @click="doMedia">
-                  解密图片 / 语音 / 视频
+                  解密图片 / 语音 / 索引视频
                 </n-button>
               </div>
 
@@ -655,7 +655,7 @@ onMounted(() => {
             <div class="panel-head">
               <div>
                 <h2>导出</h2>
-                <p class="hint">已选 {{ picked.length }} 个会话</p>
+                <p class="hint">已选 {{ picked.length }} 个会话 · 视频将在导出时按需转码</p>
               </div>
             </div>
 

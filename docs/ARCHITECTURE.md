@@ -116,13 +116,13 @@ page >1：[ciphertext 4016][IV 16][HMAC 64]
 - 源文件：`msg/video/<月份>/<随机哈希>.mp4`、`msg/attach/**/Rec/**/V/*.mp4`
 - 文件名不可直接对应消息；视频消息 XML 的 `md5` = 明文文件 MD5，因此需要计算本地文件哈希建立索引
 - 索引持久化到 `media/<账号>/video_index.json`，按 mtime/size 增量
-- 编码兼容：HEVC 转 H.264 缓存到 `media/<账号>/videos_h264/<md5>.mp4`
+- 编码兼容：导出所选会话时，将涉及的 HEVC 按需转码为 H.264，缓存到 `media/<账号>/videos_h264/<md5>.mp4`
 
 ### 6.4 增量与并发
 
 - 图片 / 语音 / WxAM：产物存在且 mtime 不早于源文件则跳过
 - 图片、语音使用分块 `ProcessPoolExecutor`；WxAM 使用 PyAV 进程内解码
-- 图片与语音并发执行，HEVC 在图片完成后接续
+- 图片与语音并发执行；视频只建立索引，HEVC 在导出阶段按所选会话转码
 
 ## 7. 富消息解析
 
