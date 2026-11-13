@@ -59,8 +59,17 @@ if errorlevel 1 (
   popd
 )
 
-rem ---------- 3. Clean old output ----------
-echo [3/5] Cleaning old build output...
+rem ---------- 3. Backup runtime data, then clean ----------
+echo [3/5] Backing up runtime data and cleaning old output...
+set "BACKUP=%~dp0dist_runtime_backup"
+if exist "%BACKUP%" rmdir /s /q "%BACKUP%"
+if exist "dist\WeChatExporter" (
+  mkdir "%BACKUP%"
+  for %%D in (data media exports) do (
+    if exist "dist\WeChatExporter\%%D" move "dist\WeChatExporter\%%D" "%BACKUP%\%%D" >nul
+  )
+  if exist "dist\WeChatExporter\config.json" move "dist\WeChatExporter\config.json" "%BACKUP%\config.json" >nul
+)
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 if exist dist (
@@ -77,6 +86,16 @@ rem ---------- 5. Extra files ----------
 echo [5/5] Copying usage and license files...
 for /d %%D in ("dist\*") do set "DIST=%%~fD"
 if not defined DIST goto :fail
+
+rem ---------- restore runtime data ----------
+if exist "%BACKUP%" (
+  for %%D in (data media exports) do (
+    if exist "%BACKUP%\%%D" move "%BACKUP%\%%D" "%DIST%\%%D" >nul
+  )
+  if exist "%BACKUP%\config.json" move "%BACKUP%\config.json" "%DIST%\config.json" >nul
+  rmdir /s /q "%BACKUP%" 2>nul
+)
+
 copy /Y "docs\USAGE.md" "%DIST%\USAGE.md" >nul
 copy /Y "LICENSE" "%DIST%\LICENSE.txt" >nul
 copy /Y "NOTICE.md" "%DIST%\NOTICE.md" >nul

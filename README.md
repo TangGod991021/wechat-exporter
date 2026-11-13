@@ -25,6 +25,7 @@
   - 语音：SILK v3 转 WAV
   - 视频：自动识别 HEVC，在准备所选数据时按需转码为 H.264，保证浏览器可直接播放
 - **自包含归档导出**：每个会话一个文件夹，`index.html` + `images/` + `videos/` + `audio/` + `manifest.json`，整个文件夹可移动、可离线打开
+- **图片点击放大**：导出的 HTML 中，聊天图片与转发记录图片均可点击全屏预览，Esc 或点击空白处关闭
 - **现代化界面**：Vue 3 + Naive UI，五步向导、深色模式、实时进度
 
 ---
@@ -101,6 +102,7 @@ cd webui && npm run dev
 
 - 目标电脑：Windows 10/11，需 WebView2 运行时（Win11 自带）
 - 首次运行会在 exe 同级目录生成 `config.json`、`data\`、`media\`、`exports\`
+- 重新打包会自动备份并恢复上述运行时数据，不会清空已解密的库与导出
 - 如需图片 / 视频处理，请另外安装 FFmpeg 并加入 `PATH`
 
 手动打包：

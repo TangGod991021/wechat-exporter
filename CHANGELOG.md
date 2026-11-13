@@ -12,6 +12,7 @@
 - `tools/make_icon.py`：一键生成多尺寸 ICO / PNG / favicon
 - 可执行文件更名为 `WeChatExporter.exe`，产物文件夹同步为 `dist\WeChatExporter\`
 - 补齐 Windows 文件属性：文件描述、产品名、版本、版权、原始文件名（`packaging/version_info.txt`）
+- 导出 HTML 图片支持点击放大预览（灯箱），聊天图片与转发记录图片均生效，Esc 或点击空白处关闭
 
 ### 变更
 
@@ -24,6 +25,7 @@
 
 ### 修复
 
+- 重新打包时自动备份并恢复 `dist` 中的 `data/`、`media/`、`exports/` 与 `config.json`，避免升级时丢失已解密数据
 - 修复 `make_store` 误用未定义变量 `c` 导致会话 / 导出接口 500（应为 `cfg`）
 - 修复前端调用 `api.startCore` 方法名不匹配导致「建立会话索引」报错（`startCore is not a function`）
 

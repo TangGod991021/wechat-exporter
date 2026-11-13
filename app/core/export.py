@@ -376,7 +376,8 @@ def _record_html(c, uri_fn=None):
             elif low.endswith('.wav'):
                 media_html = f'<audio controls src="{uri}"></audio>'
             else:
-                media_html = f'<img class="ri-img" src="{uri}" loading="lazy">'
+                media_html = (f'<img class="ri-img" src="{uri}" loading="lazy" '
+                              f'title="点击放大">')
         rows.append(f'<div class="record-item">{head}{body}{size}{media_html}</div>')
     title = html.escape(c.get('title') or '聊天记录')
     count = len(c.get('records', []))
@@ -470,6 +471,12 @@ justify-content:space-between;align-items:center;gap:10px}}
 .ri-text{{font-size:13px;color:#333;word-break:break-word}}
 .ri-size{{font-size:12px;color:#aaa;margin-top:2px}}
 .ri-img{{max-width:220px;border-radius:6px;margin-top:4px;display:block}}
+img.chat-img,img.ri-img{{cursor:zoom-in}}
+#lightbox{{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;
+align-items:center;justify-content:center;z-index:9999;padding:24px;cursor:zoom-out}}
+#lightbox.show{{display:flex}}
+#lightbox img{{max-width:92vw;max-height:92vh;border-radius:8px;
+box-shadow:0 20px 60px rgba(0,0,0,.5);object-fit:contain;background:#fff}}
 </style></head><body><h2>{esc(title)} 聊天记录（{len(msgs)} 条）</h2>"""]
     for m in msgs:
         kind = m.get('kind', 'text')
@@ -490,11 +497,26 @@ justify-content:space-between;align-items:center;gap:10px}}
                 body += (f'<br><video class="chat-video" controls{poster_attr} '
                          f'src="{uri}"></video>')
             else:
-                body += f'<br><img class="chat-img" src="{uri}" loading="lazy">'
+                body += (f'<br><img class="chat-img" src="{uri}" loading="lazy" '
+                         f'title="点击放大">')
         parts.append(
             f'<div class="{cls}"><div class="meta">{esc(m["sender"])} · {esc(m["time"])}</div>'
             f'<div class="bubble">{body}</div></div>')
-    parts.append('</body></html>')
+    parts.append("""<div id="lightbox" role="dialog" aria-label="图片预览"><img alt="图片预览"></div>
+<script>
+(function(){
+  var lb=document.getElementById('lightbox'),big=lb&&lb.querySelector('img');
+  function close(){lb.classList.remove('show');big.removeAttribute('src');document.body.style.overflow='';}
+  document.addEventListener('click',function(e){
+    var t=e.target;
+    if(t&&t.tagName==='IMG'&&(t.classList.contains('chat-img')||t.classList.contains('ri-img'))){
+      big.src=t.currentSrc||t.src;lb.classList.add('show');document.body.style.overflow='hidden';
+    }else if(e.target===lb||e.target===big){close();}
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')close();});
+})();
+</script>
+</body></html>""")
     with open(path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(parts))
 
