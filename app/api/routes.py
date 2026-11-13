@@ -167,7 +167,8 @@ def create_app():
             root = tk.Tk()
             root.withdraw()
             root.attributes('-topmost', True)
-            path = filedialog.askdirectory(title='选择微信数据目录（含 wxid_xxx 文件夹）')
+            path = filedialog.askdirectory(
+                title='选择微信数据目录或其上级目录（会自动递归查找 wxid 账号）')
             root.destroy()
             return {'path': path or ''}
         except Exception as e:  # noqa: BLE001
