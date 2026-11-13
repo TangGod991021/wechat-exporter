@@ -718,6 +718,15 @@ onMounted(() => {
               </div>
             </div>
 
+            <n-alert
+              v-if="boot?.ffmpeg && !boot.ffmpeg.available"
+              type="warning"
+              style="margin-bottom: 12px"
+            >
+              未检测到 FFmpeg，HEVC 视频将无法转码播放；请安装 FFmpeg 并加入 PATH，或在
+              config.json 中配置 ffmpeg 的完整路径。
+            </n-alert>
+
             <div class="prepare-grid">
               <div class="prep">
                 <div class="prep-icon"><n-icon size="22"><ChatbubblesOutline /></n-icon></div>

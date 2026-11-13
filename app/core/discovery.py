@@ -30,10 +30,35 @@ WECHAT_EXES = [
 ]
 
 
-def candidate_roots():
-    """常见的微信数据根目录（含各盘符根目录，兼容改过存储路径的情况）"""
+def _documents_dirs() -> list:
+    """Documents 目录候选：本地、OneDrive 重定向与注册表实际路径"""
     home = Path(os.environ.get('USERPROFILE', 'C:/Users'))
-    out = [home / 'Documents' / 'xwechat_files']
+    dirs = [home / 'Documents']
+    for env in ('OneDrive', 'OneDriveConsumer', 'OneDriveCommercial'):
+        base = os.environ.get(env)
+        if base:
+            dirs.append(Path(base) / 'Documents')
+    try:
+        import winreg
+        with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r'Software\Microsoft\Windows\CurrentVersion\Explorer'
+                r'\User Shell Folders') as key:
+            value, _ = winreg.QueryValueEx(key, 'Personal')
+        dirs.append(Path(os.path.expandvars(value)))
+    except Exception:
+        pass
+    out = []
+    for d in dirs:
+        key = str(d).lower()
+        if key not in {str(x).lower() for x in out}:
+            out.append(d)
+    return out
+
+
+def candidate_roots():
+    """常见的微信数据根目录（含盘符根与 OneDrive 重定向文档）"""
+    out = [d / 'xwechat_files' for d in _documents_dirs()]
     for drive in 'CDEFGHIJKLMNOPQRSTUVWXYZ':
         if os.path.exists(f'{drive}:/'):
             out.append(Path(f'{drive}:/xwechat_files'))
@@ -42,11 +67,15 @@ def candidate_roots():
 
 def detect_wechat_root() -> str:
     for root in candidate_roots():
-        if os.path.isdir(root):
+        if not os.path.isdir(root):
+            continue
+        try:
             accounts = [d for d in os.listdir(root)
                         if os.path.isdir(os.path.join(root, d, 'db_storage'))]
-            if accounts:
-                return root
+        except OSError:
+            continue
+        if accounts:
+            return root
     return ''
 
 
@@ -180,7 +209,8 @@ EVERYTHING_INI = ('run_as_admin=0\n'
                   'show_in_taskbar=0\n'
                   'minimize_to_tray=1\n'
                   'show_tray_icon=1\n')
-_started_everything = ''  # 记录本程序拉起的 Everything.exe，退出时按需关闭
+_started_everything = ''   # 本程序拉起的 Everything.exe 路径
+_started_proc = None       # 对应的 Popen，用于确认进程仍存活
 
 
 def _app_base_dirs() -> list:
@@ -260,7 +290,7 @@ def everything_status() -> dict:
 
 
 def _es_ping(es_exe: str) -> bool:
-    """es.exe 能连上 Everything IPC 时返回 True（退出码 0）"""
+    """es.exe 能连上本程序的 Everything 实例时返回 True"""
     try:
         r = proc.run([es_exe, '-n', '1', '__wechat_exporter_ping__'],
                      capture_output=True, timeout=10)
@@ -307,8 +337,8 @@ def _hide_windows_for(pid: int, seconds: float = 10.0):
 
 
 def ensure_everything_running(wait: float = 15.0) -> bool:
-    """确保 Everything 在运行；未运行时自动拉起随程序分发的便携版。"""
-    global _started_everything
+    """确保本程序的 Everything 独立实例在运行；未运行时自动拉起便携版。"""
+    global _started_everything, _started_proc
     es_exe = find_es_exe()
     if not es_exe:
         return False
@@ -317,7 +347,7 @@ def ensure_everything_running(wait: float = 15.0) -> bool:
     exe = find_everything_exe(es_exe)
     if not exe:
         return False
-    # 便携模式：同目录存在 Everything.ini 时使用便携配置；默认不提权、不进任务栏
+    # 便携配置：默认不提权、不进任务栏
     ini = Path(exe).with_name('Everything.ini')
     try:
         if not ini.exists():
@@ -326,30 +356,41 @@ def ensure_everything_running(wait: float = 15.0) -> bool:
         pass
     try:
         p = proc.spawn([exe, '-minimized'])
-        _started_everything = exe
-        # 静默启动：持续隐藏窗口，避免首帧闪现
         threading.Thread(target=_hide_windows_for, args=(p.pid, 10.0),
                          daemon=True).start()
     except Exception:
         return False
     deadline = time.time() + wait
     while time.time() < deadline:
+        if p.poll() is not None:
+            return False  # 启动后立即退出（被已有实例接管或配置异常）
         if _es_ping(es_exe):
+            # 确认进程仍存活后才登记，避免退出时误关其他实例
+            _started_everything = exe
+            _started_proc = p
             return True
         time.sleep(0.5)
     return False
 
 
 def shutdown_everything():
-    """关闭本程序拉起的 Everything（不会影响用户自己运行的实例）"""
-    global _started_everything
-    if not _started_everything:
+    """只关闭本程序拉起且仍存活的 Everything 进程（按 PID，不影响用户实例）"""
+    global _started_everything, _started_proc
+    _started_everything = ''
+    p = _started_proc
+    _started_proc = None
+    if p is None or p.poll() is not None:
         return
     try:
-        proc.run([_started_everything, '-exit'], capture_output=True, timeout=8)
+        # 不带 /F 是发送 WM_CLOSE，让 Everything 正常保存索引
+        proc.run(['taskkill', '/PID', str(p.pid)],
+                 capture_output=True, timeout=8)
+        p.wait(timeout=5)
     except Exception:
-        pass
-    _started_everything = ''
+        try:
+            p.kill()
+        except Exception:
+            pass
 
 
 def _decode_output(raw) -> str:

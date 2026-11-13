@@ -2,3 +2,5 @@
 Everything.db
 Everything.db.tmp
 *.log
+Everything-*.db
+Everything-*.db.tmp

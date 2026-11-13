@@ -48,7 +48,7 @@ def prepare_selected_media(store, targets, attach_dir, wxid, codes, ffmpeg,
         try:
             stats['wxam'] = prepare_wxam(
                 store.images_dir, workers=workers, only_md5s=ids['images'],
-                progress=_sub_progress(progress, 50, 62))
+                progress=_sub_progress(progress, 50, 62), ffmpeg=ffmpeg)
         except Exception as e:  # noqa: BLE001
             stats['wxam'] = {'error': str(e)}
     else:

@@ -31,7 +31,7 @@ app.exe（pywebview 原生窗口）
 
 | 模块 | 职责 |
 |---|---|
-| `app/main.py` | 启动 FastAPI 线程 + pywebview 窗口 |
+| `app/main.py` | 单实例互斥、端口重试与 `/api/bootstrap` 身份校验、pywebview 窗口 |
 | `app/config.py` | 配置读写、账号目录推导 |
 | `app/api/routes.py` | 路由、任务编排、静态资源挂载 |
 | `app/core/discovery.py` | 数据目录 / 账号 / 微信版本 / kvcomm code 发现；集成 Everything（`es.exe` / HTTP JSON）快速定位 `xwechat_files`，不可用时回退本地递归扫描 |
@@ -41,6 +41,13 @@ app.exe（pywebview 原生窗口）
 | `app/core/message_parser.py` | 富消息 XML 解析 |
 | `app/core/export.py` | 会话解析、HTML 渲染、归档导出 |
 | `app/core/jobs.py` | 后台任务与进度；同类型任务互斥、进度回调处检查取消 |
+
+启动流程要点：
+
+- Windows 命名互斥量防止双实例；重复启动时提示并尝试打开 `.runtime_url` 中记录的地址
+- 端口随机探测后绑定，被占用时重试（最多 3 个候选端口）
+- `wait_server` 除探测端口外还会请求 `/api/bootstrap` 并校验 `version`，避免误连其他本地服务
+- 启动等待上限 60 秒；成功后在 `.runtime_url` 写入带令牌的地址，退出时删除
 
 ## 3. 微信 4.x 数据结构要点
 
@@ -129,7 +136,9 @@ page >1：[ciphertext 4016][IV 16][HMAC 64]
 - 源文件：`msg/video/<月份>/<随机哈希>.mp4`、`msg/attach/**/Rec/**/V/*.mp4`
 - 文件名不可直接对应消息；视频消息 XML 的 `md5` = 明文文件 MD5，因此需要计算本地文件哈希建立索引
 - 索引持久化到 `media/<账号>/video_index.json`，按 mtime/size 增量
-- 编码兼容：准备所选数据时，将涉及的 HEVC 按需转码为 H.264，缓存到 `media/<账号>/videos_h264/<md5>.mp4`
+- 编码兼容：准备所选数据时，将涉及的 HEVC 按需转码为 H.264（强制 `-pix_fmt yuv420p`），缓存到 `media/<账号>/videos_h264/<md5>.mp4`
+- FFmpeg/ffprobe 可用性通过 `media.ffmpeg_status()` 汇总到 `/api/bootstrap`；WxAM 回退同样使用配置的 ffmpeg 路径
+- 无法探测编码的视频计入 `probe_failed`，准备任务会提示，而非静默跳过
 
 ### 6.4 增量与并发
 

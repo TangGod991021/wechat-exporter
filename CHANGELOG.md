@@ -22,6 +22,10 @@
 - 群聊消息前缀按真实 sender 剥离，XML 类型不再因 `wxid:\n` 前缀丢失内容
 - HEVC 转码强制 `-pix_fmt yuv420p`，修复 10-bit 视频仍无法播放
 - 导出单个会话失败不中断整批；引用模式同名会话不再互相覆盖
+- 增加单实例保护；启动时校验 `/api/bootstrap` 身份并支持端口重试，避免误连其他服务
+- Everything 退出改为按 PID 只关闭本程序启动的进程
+- 数据目录自动探测支持 OneDrive 重定向与注册表 Documents 路径
+- 增加 FFmpeg 可用性检测与准备阶段失败提示；WxAM 使用配置的 ffmpeg 路径
 
 ### 安全
 

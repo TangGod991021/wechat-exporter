@@ -193,6 +193,7 @@ def create_app(token: str = ''):
             'wechat_root': root,
             'detected_root': discovery.detect_wechat_root(),
             'everything': discovery.everything_status(),
+            'ffmpeg': media.ffmpeg_status(c.get('ffmpeg', 'ffmpeg')),
             'wechat_version': discovery.detect_wechat_version(),
             'weixin_running': discovery.weixin_running(),
             'accounts': accounts,
@@ -365,7 +366,23 @@ def create_app(token: str = ''):
                 acc['username'], discovery.find_kvcomm_codes(),
                 c.get('ffmpeg', 'ffmpeg'), workers=body.workers,
                 progress=lambda p, m='': job.update(10 + int(p * 0.9), m))
-            job.update(100, '所选会话数据准备完成')
+            problems = []
+            for key, label in (('images', '图片'), ('wxam', 'WxAM'),
+                               ('voices', '语音')):
+                st = result.get(key) or {}
+                if st.get('error'):
+                    problems.append(f'{label}: {st["error"]}')
+                elif st.get('failed'):
+                    problems.append(f'{label}失败 {st["failed"]} 个')
+            video = result.get('videos') or {}
+            if video.get('probe_failed'):
+                problems.append(f'视频编码探测失败 {video["probe_failed"]} 个（FFmpeg 可能缺失）')
+            if video.get('failed'):
+                problems.append(f'视频转码失败 {video["failed"]} 个')
+            if problems:
+                job.update(99, '准备完成但有异常：' + '；'.join(problems[:4]))
+            else:
+                job.update(100, '所选会话数据准备完成')
             return result
 
         return start_job('prepare', run)

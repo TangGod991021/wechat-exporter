@@ -7,6 +7,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.core.discovery import (  # noqa: E402
     _wechat_roots_from_paths,
+    candidate_roots,
     everything_status,
     find_accounts,
 )
@@ -61,6 +62,19 @@ def main():
         # 不存在的路径应被忽略
         assert _wechat_roots_from_paths([os.path.join(tmp, 'nope', 'db_storage')]) == []
         print('  ok  忽略不存在的路径')
+
+    # OneDrive 重定向的文档目录也应出现在候选根目录中
+    old = os.environ.get('OneDrive')
+    try:
+        os.environ['OneDrive'] = r'D:\OneDriveTest'
+        roots = candidate_roots()
+        assert any('OneDriveTest' in r.replace('/', '\\') for r in roots), roots
+    finally:
+        if old is None:
+            os.environ.pop('OneDrive', None)
+        else:
+            os.environ['OneDrive'] = old
+    print('  ok  OneDrive 文档目录候选')
 
     status = everything_status()
     assert set(status) == {'available', 'es_path', 'exe_path'}, status

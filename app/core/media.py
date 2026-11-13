@@ -23,6 +23,26 @@ import wave
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from datetime import datetime
 
+
+def resolve_ffmpeg(ffmpeg='ffmpeg') -> str:
+    """返回可执行的 ffmpeg 路径（支持绝对路径或 PATH）"""
+    if ffmpeg and os.path.isfile(ffmpeg):
+        return ffmpeg
+    return shutil.which(ffmpeg or 'ffmpeg') or ''
+
+
+def ffmpeg_status(ffmpeg='ffmpeg') -> dict:
+    """FFmpeg/ffprobe 可用性，供界面提示"""
+    path = resolve_ffmpeg(ffmpeg)
+    probe = ''
+    if path:
+        candidate = os.path.join(os.path.dirname(path), 'ffprobe.exe')
+        if os.path.isfile(candidate):
+            probe = candidate
+    probe = probe or shutil.which('ffprobe') or ''
+    return {'available': bool(path), 'ffmpeg': path or ffmpeg,
+            'ffprobe': probe}
+
 from Crypto.Cipher import AES
 from Crypto.Util import Padding
 
@@ -143,7 +163,7 @@ def _image_batch_worker(args):
     return ok, fail, formats
 
 
-def _wxam_batch_worker(batch):
+def _wxam_batch_worker(batch, ffmpeg='ffmpeg'):
     """batch: [(hevc_path, jpg_path)]，优先 PyAV，失败回退 ffmpeg"""
     try:
         import av
@@ -180,7 +200,7 @@ def _wxam_batch_worker(batch):
                 with open(tmp, 'wb') as f:
                     f.write(data[pos:])
                 r = proc.run(
-                    ['ffmpeg', '-y', '-v', 'error', '-f', 'hevc', '-i', tmp,
+                    [ffmpeg, '-y', '-v', 'error', '-f', 'hevc', '-i', tmp,
                      '-frames:v', '1', '-q:v', '2', dst],
                     capture_output=True, timeout=60)
                 os.remove(tmp)
@@ -395,7 +415,7 @@ def prepare_video_playback(video_index, cache_path, playback_dir, ffmpeg='ffmpeg
     codecs = {v['md5']: v.get('codec', '') for v in cache.values() if v.get('md5')}
 
     hevc_tasks = []
-    hevc = skipped = selected = 0
+    hevc = skipped = selected = probe_failed = 0
     for md5, src in video_index.items():
         if only_md5s is not None and md5 not in only_md5s:
             continue
@@ -407,6 +427,9 @@ def prepare_video_playback(video_index, cache_path, playback_dir, ffmpeg='ffmpeg
             p = by_md5.get(md5)
             if p in cache:
                 cache[p]['codec'] = codec
+        if not codec:
+            probe_failed += 1  # ffprobe 缺失/失败，无法判断编码
+            continue
         if codec != 'hevc':
             continue
         hevc += 1
@@ -443,7 +466,7 @@ def prepare_video_playback(video_index, cache_path, playback_dir, ffmpeg='ffmpeg
                     progress(int(i / len(hevc_tasks) * 100),
                              f'视频转码 {i}/{len(hevc_tasks)}')
     return {'selected': selected, 'hevc': hevc, 'transcoded': ok,
-            'skipped': skipped, 'failed': fail}
+            'skipped': skipped, 'failed': fail, 'probe_failed': probe_failed}
 
 
 def _plan_voices(media_db, voices_dir, only_messages=None):
@@ -498,7 +521,8 @@ def prepare_images(attach_dir, images_dir, wxid, codes, workers=None,
             'skipped': skipped, 'failed': fail, 'formats': formats}
 
 
-def prepare_wxam(images_dir, workers=None, only_md5s=None, progress=None):
+def prepare_wxam(images_dir, workers=None, only_md5s=None, progress=None,
+                 ffmpeg='ffmpeg'):
     """只转换指定 md5 的 WxAM（.hevc）图片"""
     workers = workers or default_workers()
     progress = progress or (lambda p, m='': None)
@@ -508,7 +532,7 @@ def prepare_wxam(images_dir, workers=None, only_md5s=None, progress=None):
     ok = fail = 0
     if tasks:
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            futs = [ex.submit(_wxam_batch_worker, t) for t in tasks]
+            futs = [ex.submit(_wxam_batch_worker, t, ffmpeg) for t in tasks]
             for i, f in enumerate(as_completed(futs), 1):
                 o, fa = f.result()
                 ok += o
