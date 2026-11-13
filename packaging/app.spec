@@ -44,7 +44,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    icon=None,
+    icon=os.path.join(ROOT, 'packaging', 'icon.ico'),
 )
 
 coll = COLLECT(

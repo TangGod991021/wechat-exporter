@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="packaging/icon-512.png" width="96" alt="微信聊天记录导出图标" />
+</p>
+
 # 微信聊天记录导出（WeChat Exporter）
 
 ![Python](https://img.shields.io/badge/Python-3.11+-blue)
@@ -208,6 +212,7 @@ app/
     jobs.py            # 后台任务
 webui/                 # Vue 3 + Naive UI 前端
 packaging/app.spec     # PyInstaller 配置
+packaging/icon.ico     # 程序图标（多尺寸）
 tests/                 # 测试
 tools/                 # 辅助脚本（界面截图等）
 docs/                  # 架构、使用、开发文档

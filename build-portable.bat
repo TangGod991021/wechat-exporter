@@ -63,6 +63,10 @@ rem ---------- 3. Clean old output ----------
 echo [3/5] Cleaning old build output...
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
+if exist dist (
+  echo [ERROR] dist folder is in use. Close the running app and run this script again.
+  goto :fail
+)
 
 rem ---------- 4. PyInstaller ----------
 echo [4/5] Packaging (about 3-10 minutes)...

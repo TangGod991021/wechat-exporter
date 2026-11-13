@@ -337,7 +337,23 @@ onMounted(() => {
     <div class="app">
       <header class="topbar">
         <div class="brand">
-          <div class="logo">微</div>
+          <div class="logo" aria-hidden="true">
+            <svg viewBox="0 0 64 64" width="100%" height="100%">
+              <defs>
+                <linearGradient id="logoGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0" stop-color="#30d684" />
+                  <stop offset="1" stop-color="#049a4c" />
+                </linearGradient>
+              </defs>
+              <rect width="64" height="64" rx="14" fill="url(#logoGradient)" />
+              <path
+                d="M22 13h20a10 10 0 0 1 10 10v10a10 10 0 0 1-10 10H27l-8 8V43h3a10 10 0 0 1-10-10V23a10 10 0 0 1 10-10Z"
+                fill="#fff"
+              />
+              <rect x="28" y="18" width="8" height="13" rx="2" fill="#07b25f" />
+              <path d="M22 28h20L32 41 22 28Z" fill="#07b25f" />
+            </svg>
+          </div>
           <div>
             <div class="title">微信聊天记录导出</div>
             <div class="sub">本地处理 · 不上传 · v{{ boot?.version || '0.1.0' }}</div>
@@ -866,12 +882,11 @@ html.dark .topbar {
   height: 38px;
   border-radius: 12px;
   background: linear-gradient(135deg, #07c160, #10b981);
-  color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: 700;
-  font-size: 18px;
+  padding: 0;
+  overflow: hidden;
   box-shadow: 0 6px 16px rgba(7, 193, 96, 0.28);
 }
 .title {

@@ -73,6 +73,22 @@ set WECHAT_EXPORTER_DB=D:\path\to\message_0.db
 .venv\Scripts\python tests\test_parser.py
 ```
 
+## 更新程序图标
+
+图标由脚本生成（原创图形：绿色圆角底 + 聊天气泡 + 导出箭头）：
+
+```bash
+python tools/make_icon.py
+```
+
+输出：
+
+- `packaging/icon.ico`：exe 使用的多尺寸图标（16 / 24 / 32 / 48 / 64 / 128 / 256），`packaging/app.spec` 已引用
+- `packaging/icon.png`、`icon-512.png`：预览图
+- `webui/public/favicon.ico`、`favicon.png`：网页图标
+
+修改图形后重新运行脚本，并重新构建前端与打包（`build-portable.bat`）。
+
 ## 更新界面截图
 
 `docs/screenshots/` 中的截图用于 README 与文档展示，由脚本自动生成（接口全部使用虚构演示数据，不读取本机微信数据）：

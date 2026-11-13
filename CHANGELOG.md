@@ -8,6 +8,8 @@
 
 - 便携版一键打包脚本 `build-portable.bat`：自动安装依赖、构建前端、执行 PyInstaller 打包
 - 打包产物附带 `USAGE.md`、`LICENSE.txt`、`NOTICE.md`
+- 全新程序图标（绿色底 + 聊天气泡 + 导出箭头）：exe、窗口、网页 favicon 与顶栏 Logo 统一使用
+- `tools/make_icon.py`：一键生成多尺寸 ICO / PNG / favicon
 
 ### 修复
 
