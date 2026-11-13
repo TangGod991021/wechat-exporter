@@ -3,7 +3,7 @@
 import glob
 import os
 import re
-import subprocess
+from app.core import proc
 import sys
 from pathlib import Path
 
@@ -41,7 +41,7 @@ def detect_wechat_version() -> str:
     for exe in WECHAT_EXES:
         if os.path.exists(exe):
             try:
-                r = subprocess.run(
+                r = proc.run(
                     ['powershell', '-NoProfile', '-Command',
                      f"(Get-Item '{exe}').VersionInfo.FileVersion"],
                     capture_output=True, text=True, timeout=15)
@@ -111,7 +111,7 @@ def find_kvcomm_codes() -> list:
 
 def weixin_running() -> bool:
     try:
-        r = subprocess.run(['tasklist', '/FI', 'IMAGENAME eq Weixin.exe', '/FO', 'CSV', '/NH'],
+        r = proc.run(['tasklist', '/FI', 'IMAGENAME eq Weixin.exe', '/FO', 'CSV', '/NH'],
                            capture_output=True, text=True, timeout=10)
         return 'Weixin.exe' in (r.stdout or '')
     except Exception:

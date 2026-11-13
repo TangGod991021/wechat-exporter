@@ -16,7 +16,7 @@ import re
 import shutil
 import sqlite3
 import struct
-import subprocess
+from app.core import proc
 import tempfile
 import threading
 import wave
@@ -179,7 +179,7 @@ def _wxam_batch_worker(batch):
                 os.close(fd)
                 with open(tmp, 'wb') as f:
                     f.write(data[pos:])
-                r = subprocess.run(
+                r = proc.run(
                     ['ffmpeg', '-y', '-v', 'error', '-f', 'hevc', '-i', tmp,
                      '-frames:v', '1', '-q:v', '2', dst],
                     capture_output=True, timeout=60)
@@ -336,7 +336,7 @@ def _probe_codec(ffmpeg, path):
     if d and os.path.exists(os.path.join(d, 'ffprobe.exe')):
         ffprobe = os.path.join(d, 'ffprobe.exe')
     try:
-        r = subprocess.run(
+        r = proc.run(
             [ffprobe, '-v', 'error', '-select_streams', 'v:0',
              '-show_entries', 'stream=codec_name', '-of', 'csv=p=0', path],
             capture_output=True, text=True, timeout=20)
@@ -348,7 +348,7 @@ def _probe_codec(ffmpeg, path):
 def _transcode_one(src, dst, ffmpeg):
     tmp = dst + '.tmp.mp4'
     try:
-        r = subprocess.run(
+        r = proc.run(
             [ffmpeg, '-y', '-v', 'error', '-i', src,
              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
              '-c:a', 'aac', '-movflags', '+faststart', tmp],

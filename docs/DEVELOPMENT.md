@@ -70,6 +70,9 @@ npm run build
 # 富消息解析（离线合成数据）
 .venv\Scripts\python tests\test_parser.py
 
+# 子进程隐藏窗口标志
+.venv\Scripts\python tests\test_proc.py
+
 # 真实数据库抽样（可选）
 set WECHAT_EXPORTER_DB=D:\path\to\message_0.db
 .venv\Scripts\python tests\test_parser.py
@@ -127,6 +130,7 @@ python tools/capture_screenshots.py
 - Python：PEP 8，4 空格
 - Vue / TypeScript：`<script setup>`，2 空格，scoped CSS
 - 提交信息：`feat:` / `fix:` / `docs:` / `refactor:` 前缀
+- 调用 `powershell` / `tasklist` / `ffmpeg` 等控制台程序时，统一使用 `app.core.proc.run`（自动附加 `CREATE_NO_WINDOW`），避免打包后弹黑框
 
 ## 隐私要求
 
