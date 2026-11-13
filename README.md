@@ -84,11 +84,26 @@ cd webui && npm run dev
 
 ---
 
-## 打包为可执行文件
+## 打包为可执行文件（便携版）
+
+**双击项目根目录的 `build-portable.bat`** 即可，脚本会自动完成：
+
+1. 创建/检查 `.venv` 并安装 Python 依赖与 PyInstaller
+2. 构建前端（`webui/dist`）
+3. 清理旧产物并执行 PyInstaller 打包
+4. 把 `USAGE.md`、`LICENSE.txt`、`NOTICE.md` 一并写入产物
+
+产物位于 `dist\微信聊天记录导出\`，**把整个文件夹复制到其他电脑，双击其中的 exe 即可运行**。
+
+- 目标电脑：Windows 10/11，需 WebView2 运行时（Win11 自带）
+- 首次运行会在 exe 同级目录生成 `config.json`、`data\`、`media\`、`exports\`
+- 如需图片 / 视频处理，请另外安装 FFmpeg 并加入 `PATH`
+
+手动打包：
 
 ```bash
 .venv\Scripts\pip install pyinstaller
-.venv\Scripts\pyinstaller packaging\app.spec
+.venv\Scripts\pyinstaller packaging\app.spec --noconfirm --clean
 # 产物：dist\微信聊天记录导出\
 ```
 

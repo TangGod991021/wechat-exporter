@@ -2,6 +2,17 @@
 
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 新增
+
+- 便携版一键打包脚本 `build-portable.bat`：自动安装依赖、构建前端、执行 PyInstaller 打包
+- 打包产物附带 `USAGE.md`、`LICENSE.txt`、`NOTICE.md`
+
+### 修复
+
+- 打包后 `config.json` 与 `data/`、`media/`、`exports/` 固定落在 exe 同级目录，整个文件夹可直接拷贝到其他电脑运行
+
 ## [0.1.0] - 2026-11-13
 
 首个公开版本。

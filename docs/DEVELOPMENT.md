@@ -51,10 +51,16 @@ npm run build
 
 ## 打包
 
+推荐直接双击根目录的 `build-portable.bat`，自动完成依赖安装、前端构建和 PyInstaller 打包，产物在 `dist\微信聊天记录导出\`。
+
+手动执行：
+
 ```bash
 .venv\Scripts\pip install pyinstaller
-.venv\Scripts\pyinstaller packaging\app.spec
+.venv\Scripts\pyinstaller packaging\app.spec --noconfirm --clean
 ```
+
+打包模式下 `app/config.py` 会把 `BASE_DIR` 定位到 exe 同级目录，因此 `config.json`、`data\`、`media\`、`exports\` 都随程序文件夹一起移动。
 
 ## 测试
 

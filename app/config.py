@@ -1,9 +1,15 @@
 # -*- coding: utf-8 -*-
 """配置管理：所有路径集中在这里，避免散落硬编码"""
 import json
+import sys
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+if getattr(sys, 'frozen', False):
+    # 打包后：config.json 与 data/media/exports 放在 exe 同级，便于整个文件夹拷贝使用
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent.parent
+
 CONFIG_FILE = BASE_DIR / 'config.json'
 
 DEFAULTS = {
