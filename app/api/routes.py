@@ -109,8 +109,8 @@ def account_state(cfg, account):
     data_root = Path(paths['data'])
     core_ready = (data_root / 'session' / 'session.db').exists() and \
         (data_root / 'contact' / 'contact.db').exists()
-    messages_ready = (data_root / 'message' / 'message_0.db').exists() and \
-        (data_root / 'message' / 'media_0.db').exists()
+    msg_dir = data_root / 'message'
+    messages_ready = any(msg_dir.glob('message_*.db')) and any(msg_dir.glob('media_*.db'))
     decrypted = messages_ready  # 兼容旧字段
     info = {'wxid': account['username'], 'nickname': ''}
     if decrypted:
@@ -270,7 +270,7 @@ def create_app(token: str = ''):
             job.update(2, '正在解密会话索引与消息库...')
             res = decrypt.decrypt_all(
                 acc['db_dir'], paths['data'], data['keys'],
-                only_rels=decrypt.CHAT_DB_RELS,
+                only_rels=decrypt.chat_db_rels(acc['db_dir']),
                 progress=lambda p: job.update(2 + int(p * 0.96)))
             job.update(100, f"会话数据就绪（成功 {res['ok']}，跳过 {res['skipped']}）")
             return res
@@ -348,7 +348,7 @@ def create_app(token: str = ''):
             job.update(1, '正在刷新会话数据...')
             decrypt.decrypt_all(
                 acc['db_dir'], paths['data'], data['keys'],
-                only_rels=decrypt.CHAT_DB_RELS,
+                only_rels=decrypt.chat_db_rels(acc['db_dir']),
                 progress=lambda p: job.update(1 + int(p * 0.09)))
             store = make_store(c, acc)
             job.update(10, f'正在准备 {len(body.targets)} 个所选会话...')

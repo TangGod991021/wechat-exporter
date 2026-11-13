@@ -97,6 +97,9 @@ page >1：[ciphertext 4016][IV 16][HMAC 64]
 - AES-256-CBC，无 padding
 - `mac_key = PBKDF2-SHA512(enc_key, salt ^ 0x3a, 2, 32)`
 - 解密后写入标准 SQLite 页面（reserve 区域补零）
+- 源库必须整页对齐（否则视为正在写入/被截断而失败）
+- 先写 `*.tmp` 并校验输出 SQLite 头，成功后 `os.replace` 原子替换；跳过已有文件时同时校验大小
+- 消息库按实际存在的 `message/message_*.db`、`media_*.db` 动态解密，兼容多分片账号
 
 实现：`app/core/decrypt.py`。
 
@@ -112,10 +115,13 @@ page >1：[ciphertext 4016][IV 16][HMAC 64]
   - 用账号自己的图片验证候选 key
 - PKCS7 补齐：密文长度 = `(aes_size // 16 + 1) * 16`
 - WxAM（`wxgf`）：`wxgf` 头 + ICC/Exif + HEVC 裸流；优先 PyAV 解码首帧，失败回退 ffmpeg
+- 转发聊天记录中的图片使用消息 md5，需经 `hardlink/hardlink.db` 的
+  `image_hardlink_info_v4` 映射到本地 `.dat` 文件名后再定位
 
 ### 6.2 语音
 
 `media_0.db` 的 `VoiceInfo.voice_data` 为 SILK v3，用 `pilk` 解码为 PCM 后封装 WAV。
+语音目录按 `Name2Id.user_name`（wxid/@chatroom）命名，导出时同样按 username 查找，不能使用备注名。
 
 ### 6.3 视频
 

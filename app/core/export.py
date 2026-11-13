@@ -53,11 +53,13 @@ class ChatStore:
         self.session_db = os.path.join(data_dir, 'session', 'session.db')
         self.contact_db = os.path.join(data_dir, 'contact', 'contact.db')
         self.media_db = os.path.join(data_dir, 'message', 'media_0.db')
+        self.hardlink_db = os.path.join(data_dir, 'hardlink', 'hardlink.db')
         self.message_dbs = sorted(glob.glob(os.path.join(data_dir, 'message', 'message_*.db')))
         self._names = None
         self._image_index = None
         self._video_index = None
         self._table_map = None
+        self._hardlink_names = None
 
     # ---------- 基础信息 ----------
     def contacts(self):
@@ -184,6 +186,58 @@ class ChatStore:
     def _find_image(self, md5):
         return self.image_index().get((md5 or '').lower())
 
+    def hardlink_stem(self, md5, kind='image'):
+        """消息里的 md5 -> 本地素材文件名（不含扩展名）
+
+        转发聊天记录里的图片/视频使用消息 md5，而本地缓存文件名是另一串
+        哈希，必须经 hardlink.db 映射才能定位。
+        """
+        md5 = (md5 or '').lower()
+        if not md5:
+            return ''
+        table = {'image': 'image_hardlink_info_v4',
+                 'video': 'video_hardlink_info_v4',
+                 'file': 'file_hardlink_info_v4'}.get(kind)
+        if not table:
+            return ''
+        if self._hardlink_names is None:
+            self._hardlink_names = {}
+            if os.path.exists(self.hardlink_db):
+                try:
+                    c = sqlite3.connect(self.hardlink_db)
+                    try:
+                        for tbl in ('image_hardlink_info_v4',
+                                    'video_hardlink_info_v4',
+                                    'file_hardlink_info_v4'):
+                            try:
+                                rows = c.execute(
+                                    f'select md5, file_name from "{tbl}"').fetchall()
+                            except sqlite3.Error:
+                                continue
+                            for msg_md5, name in rows:
+                                if not msg_md5 or not name:
+                                    continue
+                                # 图片/视频只取真实缓存文件名（部分行是内部 id）
+                                low = name.lower()
+                                if tbl == 'image_hardlink_info_v4' and not low.endswith('.dat'):
+                                    continue
+                                if tbl == 'video_hardlink_info_v4' and not low.endswith('.mp4'):
+                                    continue
+                                self._hardlink_names.setdefault(
+                                    (tbl, msg_md5.lower()), name)
+                    finally:
+                        c.close()
+                except sqlite3.Error:
+                    pass
+        name = self._hardlink_names.get((table, md5), '')
+        if not name:
+            return ''
+        stem = os.path.splitext(name)[0]
+        # 本地图片可能有 _h/_t 缩略/高清后缀，索引统一为无后缀名
+        if stem[-2:].lower() in ('_h', '_t'):
+            stem = stem[:-2]
+        return stem
+
     def video_index(self):
         if self._video_index is None:
             if self.video_cache and os.path.exists(self.video_cache):
@@ -278,8 +332,9 @@ class ChatStore:
                     rec['media'] = self._find_video(md5) or ''
                     rec['video_md5'] = md5 or ''
                 elif rec.get('kind') == 'image':
-                    rec['media'] = self._find_image(md5) or ''
-                    rec['image_md5'] = md5 or ''
+                    stem = self.hardlink_stem(md5, 'image') or (md5 or '')
+                    rec['media'] = self._find_image(stem) or ''
+                    rec['image_md5'] = stem
                 else:
                     rec['media'] = ''
 
@@ -300,7 +355,8 @@ class ChatStore:
         elif base == 34:
             m = re.search(r'voicelength="(\d+)"', content)
             secs = int(m.group(1)) / 1000 if m else 0
-            media = self._find_voice(contacts.get(chat, chat), local_id) or ''
+            # 语音按 username（wxid/@chatroom）分目录，不能用备注/昵称
+            media = self._find_voice(chat, local_id) or ''
             text = f'[语音 {secs:.0f}s]' if secs else '[语音]'
         elif base == 43:
             m = re.search(r'md5="([0-9a-fA-F]{32})"', content)
