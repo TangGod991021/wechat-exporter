@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
 """发现微信数据目录、账号、版本、图片密钥 code"""
 import glob
+import json
 import os
 import re
+import shutil
+import threading
+import time
+import urllib.parse
+import urllib.request
 from app.core import proc
 import sys
 from pathlib import Path
@@ -164,6 +170,336 @@ def find_accounts(root: str, recursive: bool = True) -> list:
         })
     out.sort(key=lambda a: -a['last_active'])
     return out
+
+
+# ---------- Everything 集成：快速定位 xwechat_files ----------
+
+EVERYTHING_PORTS = [80, 8080]
+# 便携版默认配置：静默运行，不提权、不进任务栏，只保留托盘图标
+EVERYTHING_INI = ('run_as_admin=0\n'
+                  'show_in_taskbar=0\n'
+                  'minimize_to_tray=1\n'
+                  'show_tray_icon=1\n')
+_started_everything = ''  # 记录本程序拉起的 Everything.exe，退出时按需关闭
+
+
+def _app_base_dirs() -> list:
+    """程序目录候选：源码运行 / 打包后 exe 同级 / PyInstaller 解包目录"""
+    dirs = []
+    if getattr(sys, 'frozen', False):
+        dirs.append(Path(sys.executable).resolve().parent)
+        meipass = getattr(sys, '_MEIPASS', '')
+        if meipass:
+            dirs.append(Path(meipass))
+    else:
+        dirs.append(Path(__file__).resolve().parent.parent.parent)
+    return dirs
+
+
+def _bundled_dirs() -> list:
+    """随程序分发的 Everything 目录（everything/ 或 packaging/everything/）"""
+    out = []
+    for base in _app_base_dirs():
+        out += [base / 'everything', base / 'packaging' / 'everything',
+                base / '_internal' / 'everything', base / 'tools']
+    return out
+
+
+def find_es_exe() -> str:
+    """查找 Everything 命令行工具 es.exe（环境变量 / PATH / 安装目录 / 随程序分发）"""
+    env = os.environ.get('WECHAT_EXPORTER_ES', '')
+    if env and os.path.isfile(env):
+        return env
+    found = shutil.which('es.exe') or shutil.which('es')
+    if found:
+        return found
+    for folder in _bundled_dirs():
+        p = folder / 'es.exe'
+        try:
+            if p.is_file():
+                return str(p)
+        except OSError:
+            pass
+    for folder in (Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'Everything',
+                   Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'Everything',
+                   Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / 'Everything'):
+        p = folder / 'es.exe'
+        try:
+            if p.is_file():
+                return str(p)
+        except OSError:
+            pass
+    return ''
+
+
+def find_everything_exe(es_exe: str = '') -> str:
+    """查找 Everything.exe：优先与 es.exe 同目录，其次随程序分发的目录"""
+    candidates = []
+    if es_exe:
+        candidates.append(Path(es_exe).resolve().parent / 'everything.exe')
+    for folder in _bundled_dirs():
+        candidates.append(folder / 'everything.exe')
+    candidates += [
+        Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'Everything' / 'Everything.exe',
+        Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'Everything' / 'Everything.exe',
+        Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / 'Everything' / 'Everything.exe',
+    ]
+    for p in candidates:
+        try:
+            if p.is_file():
+                return str(p)
+        except OSError:
+            pass
+    return ''
+
+
+def everything_status() -> dict:
+    es = find_es_exe()
+    return {'available': bool(es), 'es_path': es,
+            'exe_path': find_everything_exe(es) if es else ''}
+
+
+def _es_ping(es_exe: str) -> bool:
+    """es.exe 能连上 Everything IPC 时返回 True（退出码 0）"""
+    try:
+        r = proc.run([es_exe, '-n', '1', '__wechat_exporter_ping__'],
+                     capture_output=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _hide_process_windows(pid: int):
+    """隐藏指定进程的顶层窗口（静默启动 Everything，不弹窗）"""
+    if os.name != 'nt':
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def callback(hwnd, _lparam):
+            wpid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(wpid))
+            if wpid.value == pid:
+                user32.ShowWindow(hwnd, 0)  # SW_HIDE
+            return True
+
+        user32.EnumWindows(enum_proc(callback), 0)
+    except Exception:
+        pass
+
+
+def _hide_windows_for(pid: int, seconds: float = 10.0):
+    """启动初期持续隐藏窗口，避免 Everything 首帧闪现
+
+    前 3 秒高频轮询（50ms），之后降低频率，兼顾静默与 CPU 占用。
+    """
+    start = time.time()
+    deadline = start + seconds
+    while True:
+        _hide_process_windows(pid)
+        now = time.time()
+        if now >= deadline:
+            break
+        time.sleep(0.05 if now - start < 3 else 0.2)
+
+
+def ensure_everything_running(wait: float = 15.0) -> bool:
+    """确保 Everything 在运行；未运行时自动拉起随程序分发的便携版。"""
+    global _started_everything
+    es_exe = find_es_exe()
+    if not es_exe:
+        return False
+    if _es_ping(es_exe):
+        return True
+    exe = find_everything_exe(es_exe)
+    if not exe:
+        return False
+    # 便携模式：同目录存在 Everything.ini 时使用便携配置；默认不提权、不进任务栏
+    ini = Path(exe).with_name('Everything.ini')
+    try:
+        if not ini.exists():
+            ini.write_text(EVERYTHING_INI, encoding='utf-8')
+    except OSError:
+        pass
+    try:
+        p = proc.spawn([exe, '-minimized'])
+        _started_everything = exe
+        # 静默启动：持续隐藏窗口，避免首帧闪现
+        threading.Thread(target=_hide_windows_for, args=(p.pid, 10.0),
+                         daemon=True).start()
+    except Exception:
+        return False
+    deadline = time.time() + wait
+    while time.time() < deadline:
+        if _es_ping(es_exe):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def shutdown_everything():
+    """关闭本程序拉起的 Everything（不会影响用户自己运行的实例）"""
+    global _started_everything
+    if not _started_everything:
+        return
+    try:
+        proc.run([_started_everything, '-exit'], capture_output=True, timeout=8)
+    except Exception:
+        pass
+    _started_everything = ''
+
+
+def _decode_output(raw) -> str:
+    if not raw:
+        return ''
+    if isinstance(raw, str):
+        return raw
+    for enc in ('utf-8', 'gbk', 'mbcs'):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode('utf-8', 'replace')
+
+
+def _es_search(query: str, limit: int = 200, es_exe: str = '') -> list:
+    """调用 es.exe 搜索，返回完整路径列表。Everything 未运行或无结果时返回空。"""
+    exe = es_exe or find_es_exe()
+    if not exe:
+        return []
+    try:
+        r = proc.run([exe, '-n', str(limit), query],
+                     capture_output=True, timeout=20)
+    except Exception:
+        return []
+    text = _decode_output(getattr(r, 'stdout', b''))
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+
+def _everything_http_search(query: str, limit: int = 200) -> list:
+    """Everything 内置 HTTP 服务器的 JSON 接口（需用户在 Everything 中开启）"""
+    ports = []
+    env = os.environ.get('WECHAT_EXPORTER_EVERYTHING_PORT', '')
+    if env.isdigit():
+        ports.append(int(env))
+    ports += [p for p in EVERYTHING_PORTS if p not in ports]
+    for port in ports:
+        url = ('http://127.0.0.1:%d/?search=%s&json=1&count=%d&path_column=1'
+               % (port, urllib.parse.quote(query), limit))
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as r:
+                data = json.loads(r.read().decode('utf-8', 'replace'))
+        except Exception:
+            continue
+        out = []
+        for item in data.get('results', []) or []:
+            name = (item.get('name') or '').strip()
+            path = (item.get('path') or '').strip()
+            if name:
+                out.append(os.path.join(path, name) if path else name)
+        if out:
+            return out
+    return []
+
+
+def _wechat_roots_from_paths(paths) -> list:
+    """把 Everything 返回的 db_storage / xwechat_files / 账号目录转换为数据根目录"""
+    roots = {}
+    for raw in paths:
+        p = os.path.normpath(str(raw).strip().strip('"'))
+        if not p or not os.path.isdir(p):
+            continue
+        name = os.path.basename(p).lower()
+        if name == 'xwechat_files':
+            roots.setdefault(p.lower(), p)
+            continue
+        if name == 'db_storage':
+            account = os.path.dirname(p)
+        elif FOLDER_RE.match(os.path.basename(p)) and _is_account_dir(p):
+            account = p
+        else:
+            continue
+        root = os.path.dirname(account)
+        if root:
+            roots.setdefault(root.lower(), root)
+    return list(roots.values())
+
+
+def _fallback_roots() -> list:
+    """Everything 不可用时的本地兜底：常见目录 + 各盘符下与微信相关的目录"""
+    roots = []
+    seen = set()
+
+    def add(path):
+        if path and os.path.isdir(path) and path.lower() not in seen:
+            seen.add(path.lower())
+            roots.append(path)
+
+    for r in candidate_roots():
+        add(r)
+    for drive in 'CDEFGHIJKLMNOPQRSTUVWXYZ':
+        base = f'{drive}:/'
+        if not os.path.exists(base):
+            continue
+        try:
+            names = os.listdir(base)
+        except OSError:
+            continue
+        for name in names:
+            lower = name.lower()
+            if not any(k in lower for k in RECURSE_HINT + ('我的文档', 'documents')):
+                continue
+            path = os.path.join(base, name)
+            if not os.path.isdir(path):
+                continue
+            add(os.path.join(path, 'xwechat_files'))
+            add(path)
+    return roots
+
+
+def locate_wechat_roots() -> dict:
+    """定位微信数据目录：优先 Everything（未运行则自动拉起），其次本地扫描。
+
+    返回 {'source', 'everything_available', 'es_exe', 'roots': [{'path','accounts'}]}
+    """
+    es_exe = find_es_exe()
+    paths = []
+    source = ''
+    if es_exe and ensure_everything_running():
+        # 首次启动时索引可能还在建立，最多等待约 10 秒
+        for _ in range(4):
+            paths = _es_search('db_storage', es_exe=es_exe)
+            paths += _es_search('xwechat_files', es_exe=es_exe)
+            if paths:
+                source = 'everything'
+                break
+            time.sleep(2.5)
+    if not paths:
+        paths = _everything_http_search('db_storage')
+        paths += _everything_http_search('xwechat_files')
+        if paths:
+            source = 'everything'
+    roots = _wechat_roots_from_paths(paths)
+    if not roots:
+        roots = _fallback_roots()
+        source = source or 'scan'
+
+    result = []
+    for root in roots:
+        accounts = find_accounts(root)
+        if accounts:
+            result.append({'path': root, 'accounts': accounts})
+    result.sort(key=lambda r: (-len(r['accounts']),
+                               -max(a['last_active'] for a in r['accounts'])))
+    return {
+        'source': source,
+        'everything_available': bool(es_exe),
+        'es_exe': es_exe,
+        'roots': result,
+    }
 
 
 def find_kvcomm_codes() -> list:

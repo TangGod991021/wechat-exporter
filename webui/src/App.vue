@@ -104,6 +104,35 @@ async function pickDir() {
   }
 }
 
+const locating = ref(false)
+
+async function locateWechat() {
+  locating.value = true
+  try {
+    const r = await api.locateWechat()
+    const roots = r.roots || []
+    if (!roots.length) {
+      message.warning(
+        r.everything_available
+          ? 'Everything 未找到微信数据目录，请手动选择'
+          : '未找到微信数据目录，请手动选择或安装 Everything 后重试',
+      )
+      return
+    }
+    const best = roots[0]
+    await api.setConfig({ wechat_root: best.path })
+    resetSelection()
+    await loadBoot()
+    const source = r.source === 'everything' ? 'Everything' : '本地扫描'
+    const more = roots.length > 1 ? `（共找到 ${roots.length} 个，已选账号最多的）` : ''
+    message.success(`${source} 找到：${best.path}${more}`)
+  } catch (e: any) {
+    message.error('自动查找失败：' + e.message)
+  } finally {
+    locating.value = false
+  }
+}
+
 async function runJob(kind: string, starter: () => Promise<any>) {
   jobs[kind] = { progress: 0, status: 'running', message: '启动中…', logs: [] }
   activeJob.value = kind
@@ -426,6 +455,16 @@ onMounted(() => {
                 <p class="hint">数据目录：{{ boot?.wechat_root || '未找到，请手动选择' }}</p>
               </div>
               <div class="actions">
+                <n-button
+                  type="primary"
+                  secondary
+                  :loading="locating"
+                  :disabled="busy || locating"
+                  @click="locateWechat"
+                >
+                  <template #icon><n-icon><SearchOutline /></n-icon></template>
+                  {{ boot?.everything?.available ? 'Everything 查找' : '自动查找' }}
+                </n-button>
                 <n-button quaternary :disabled="busy" @click="pickDir">
                   <template #icon><n-icon><FolderOpenOutline /></n-icon></template>
                   选择数据目录
@@ -470,9 +509,14 @@ onMounted(() => {
               >
                 <template #extra>
                   <div class="hint" style="margin-bottom: 12px">
-                    请确认微信已登录，或手动选择 xwechat_files 所在目录
+                    请确认微信已登录；可自动查找，或手动选择 xwechat_files 所在目录
                   </div>
-                  <n-button type="primary" @click="pickDir">选择数据目录</n-button>
+                  <n-space justify="center">
+                    <n-button type="primary" :loading="locating" @click="locateWechat">
+                      {{ boot?.everything?.available ? 'Everything 查找' : '自动查找' }}
+                    </n-button>
+                    <n-button @click="pickDir">选择数据目录</n-button>
+                  </n-space>
                 </template>
               </n-empty>
             </n-spin>

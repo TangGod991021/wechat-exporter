@@ -14,6 +14,7 @@ from pathlib import Path
 import uvicorn
 
 from app.api.routes import create_app
+from app.core import discovery
 
 
 def _base_dir() -> Path:
@@ -113,12 +114,17 @@ def _run():
                 time.sleep(3600)
         except KeyboardInterrupt:
             return
+        finally:
+            discovery.shutdown_everything()
 
     import webview
     webview.create_window(
         '微信聊天记录导出', url, width=1220, height=820,
         min_size=(980, 640), background_color='#f7f8fa')
-    webview.start()
+    try:
+        webview.start()
+    finally:
+        discovery.shutdown_everything()
 
 
 if __name__ == '__main__':

@@ -100,6 +100,25 @@ copy /Y "docs\USAGE.md" "%DIST%\USAGE.md" >nul
 copy /Y "LICENSE" "%DIST%\LICENSE.txt" >nul
 copy /Y "NOTICE.md" "%DIST%\NOTICE.md" >nul
 
+rem ---------- bundled Everything (portable) ----------
+if exist "packaging\everything\everything.exe" (
+  echo       Bundling Everything portable...
+  mkdir "%DIST%\everything" >nul 2>nul
+  copy /Y "packaging\everything\everything.exe" "%DIST%\everything\" >nul
+  copy /Y "packaging\everything\es.exe" "%DIST%\everything\" >nul
+  copy /Y "packaging\everything\Everything.lng" "%DIST%\everything\" >nul
+  copy /Y "packaging\everything\README.txt" "%DIST%\everything\" >nul 2>nul
+  rem portable config: silent, no UAC, no taskbar button
+  (
+    echo run_as_admin=0
+    echo show_in_taskbar=0
+    echo minimize_to_tray=1
+    echo show_tray_icon=1
+  ) > "%DIST%\everything\Everything.ini"
+) else (
+  echo [WARN] packaging\everything not found, Everything auto-find disabled
+)
+
 echo.
 echo ============================================
 echo   Build complete

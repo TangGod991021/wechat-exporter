@@ -143,6 +143,7 @@ def create_app():
             'version': __version__,
             'wechat_root': root,
             'detected_root': discovery.detect_wechat_root(),
+            'everything': discovery.everything_status(),
             'wechat_version': discovery.detect_wechat_version(),
             'weixin_running': discovery.weixin_running(),
             'accounts': accounts,
@@ -158,6 +159,11 @@ def create_app():
                 c[k] = v
         save_config(c)
         return {'ok': True}
+
+    @app.post('/api/locate-wechat')
+    def locate_wechat():
+        """用 Everything（或本地扫描）快速定位微信数据目录"""
+        return discovery.locate_wechat_roots()
 
     @app.post('/api/pick-folder')
     def pick_folder():

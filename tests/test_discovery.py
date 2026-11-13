@@ -5,7 +5,11 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from app.core.discovery import find_accounts  # noqa: E402
+from app.core.discovery import (  # noqa: E402
+    _wechat_roots_from_paths,
+    everything_status,
+    find_accounts,
+)
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
 
@@ -43,6 +47,24 @@ def main():
         found = find_accounts(os.path.join(tmp, 'docs'))
         assert found == [], f'无关目录误判: {found}'
         print('  ok  无关目录不误判')
+
+        # Everything 返回的 db_storage / xwechat_files / 账号目录都能归一到数据根目录
+        roots = _wechat_roots_from_paths([
+            os.path.join(account, 'db_storage'),
+            os.path.join(tmp, 'xwechat_files'),
+            account,
+        ])
+        expected_root = os.path.normpath(os.path.join(tmp, 'xwechat_files'))
+        assert [os.path.normpath(r) for r in roots] == [expected_root], f'根目录归一化错误: {roots}'
+        print('  ok  Everything 结果归一化')
+
+        # 不存在的路径应被忽略
+        assert _wechat_roots_from_paths([os.path.join(tmp, 'nope', 'db_storage')]) == []
+        print('  ok  忽略不存在的路径')
+
+    status = everything_status()
+    assert set(status) == {'available', 'es_path', 'exe_path'}, status
+    print(f'  ok  Everything 状态检测: {status}')
 
     print('discovery 测试全部通过')
 

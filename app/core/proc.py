@@ -15,3 +15,13 @@ def run(cmd, **kwargs):
     if os.name == 'nt':
         kwargs.setdefault('creationflags', CREATE_NO_WINDOW)
     return subprocess.run(cmd, **kwargs)
+
+
+def spawn(cmd, **kwargs):
+    """启动常驻子进程（如 Everything），不等待退出，并隐藏控制台。"""
+    if os.name == 'nt':
+        kwargs.setdefault('creationflags', CREATE_NO_WINDOW)
+    kwargs.setdefault('stdin', subprocess.DEVNULL)
+    kwargs.setdefault('stdout', subprocess.DEVNULL)
+    kwargs.setdefault('stderr', subprocess.DEVNULL)
+    return subprocess.Popen(cmd, **kwargs)

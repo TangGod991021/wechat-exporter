@@ -20,6 +20,7 @@ export const api = {
   bootstrap: () => request('/api/bootstrap'),
   setConfig: (body: any) => request('/api/config', { method: 'POST', body: JSON.stringify(body) }),
   pickFolder: () => request('/api/pick-folder', { method: 'POST' }),
+  locateWechat: () => request('/api/locate-wechat', { method: 'POST' }),
   startKeys: (account: string) =>
     request('/api/keys', { method: 'POST', body: JSON.stringify({ account }) }),
   startCore: (account: string) =>

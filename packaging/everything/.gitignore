@@ -1,0 +1,4 @@
+# Everything 运行时生成的索引与日志
+Everything.db
+Everything.db.tmp
+*.log

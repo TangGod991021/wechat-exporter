@@ -49,7 +49,16 @@ The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
 ```
 
-## 3. 运行时依赖
+## 3. Everything（随程序分发）
+
+- 项目：https://www.voidtools.com/zh-cn/
+- 版权：Copyright (C) 2026 voidtools
+- 分发文件：`everything.exe`（1.4.1.1026 x64 便携版）、`es.exe`（命令行接口 1.1.0.26）、`Everything.lng`
+- 用途：第一步「Everything 查找」快速定位微信数据目录
+- 许可：Everything 为免费软件，许可条款见 https://www.voidtools.com/License.txt
+- 说明：程序仅在 Everything 未运行时以最小化方式后台启动随附版本，退出时关闭由本程序启动的实例
+
+## 4. 运行时依赖
 
 本项目依赖以下第三方库，其许可由各自项目规定：
 
