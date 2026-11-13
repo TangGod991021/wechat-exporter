@@ -55,7 +55,7 @@ copies or substantial portions of the Software.
 - 版权：Copyright (C) 2026 voidtools
 - 分发文件：`everything.exe`（1.4.1.1026 x64 便携版）、`es.exe`（命令行接口 1.1.0.26）、`Everything.lng`
 - 用途：第一步「Everything 查找」快速定位微信数据目录
-- 许可：Everything 为免费软件，许可条款见 https://www.voidtools.com/License.txt
+- 许可：Everything 为免费软件，随包文本见 `licenses/Everything-LICENSE.txt`
 - 说明：程序仅在 Everything 未运行时以最小化方式后台启动随附版本，退出时关闭由本程序启动的实例
 
 ## 4. 运行时依赖
@@ -72,6 +72,11 @@ copies or substantial portions of the Software.
 | pilk | MIT |
 | PyAV | BSD-3-Clause |
 | Vue 3 / Naive UI | MIT |
-| FFmpeg（外部程序，未打包） | LGPL-2.1+ / GPL（取决于构建选项） |
+| FFmpeg 运行库（经 PyAV 打包，含 libx264/libx265 等） | LGPL-2.1+ / GPLv2+（取决于组件） |
 
-如需再分发本项目，请同时保留上述声明，并确认 FFmpeg 的分发方式符合其许可要求。
+FFmpeg 运行库由 PyAV wheel 提供并随 PyInstaller 产物分发（`_internal/av.libs/`），
+不是外部未打包程序。完整说明与源码获取方式见 `licenses/FFmpeg-LICENSE.md`，
+许可证全文见 `licenses/GPLv2.txt`、`licenses/LGPLv2.1.txt`。
+
+如需再分发本项目，请同时保留上述声明与 `licenses/` 目录，并确认 FFmpeg
+各组件的分发方式符合其许可要求。

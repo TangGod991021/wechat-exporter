@@ -62,13 +62,15 @@ if errorlevel 1 (
 rem ---------- 3. Backup runtime data, then clean ----------
 echo [3/5] Backing up runtime data and cleaning old output...
 set "BACKUP=%~dp0dist_runtime_backup"
-if exist "%BACKUP%" rmdir /s /q "%BACKUP%"
-if exist "dist\WeChatExporter" (
-  mkdir "%BACKUP%"
-  for %%D in (data media exports) do (
-    if exist "dist\WeChatExporter\%%D" move "dist\WeChatExporter\%%D" "%BACKUP%\%%D" >nul
+if exist "%BACKUP%" (
+  echo [WARN] Keeping existing runtime backup: %BACKUP%
+) else (
+  if exist "dist\WeChatExporter" (
+    mkdir "%BACKUP%"
+    for %%D in (data media exports) do (
+      if exist "dist\WeChatExporter\%%D" move "dist\WeChatExporter\%%D" "%BACKUP%\%%D" >nul
+    )
   )
-  if exist "dist\WeChatExporter\config.json" move "dist\WeChatExporter\config.json" "%BACKUP%\config.json" >nul
 )
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
@@ -92,31 +94,20 @@ if exist "%BACKUP%" (
   for %%D in (data media exports) do (
     if exist "%BACKUP%\%%D" move "%BACKUP%\%%D" "%DIST%\%%D" >nul
   )
-  if exist "%BACKUP%\config.json" move "%BACKUP%\config.json" "%DIST%\config.json" >nul
   rmdir /s /q "%BACKUP%" 2>nul
 )
+rem Release package must not ship a machine-specific config.json
+if exist "%DIST%\config.json" del /q "%DIST%\config.json"
 
 copy /Y "docs\USAGE.md" "%DIST%\USAGE.md" >nul
 copy /Y "LICENSE" "%DIST%\LICENSE.txt" >nul
 copy /Y "NOTICE.md" "%DIST%\NOTICE.md" >nul
 
-rem ---------- bundled Everything (portable) ----------
-if exist "packaging\everything\everything.exe" (
-  echo       Bundling Everything portable...
-  mkdir "%DIST%\everything" >nul 2>nul
-  copy /Y "packaging\everything\everything.exe" "%DIST%\everything\" >nul
-  copy /Y "packaging\everything\es.exe" "%DIST%\everything\" >nul
-  copy /Y "packaging\everything\Everything.lng" "%DIST%\everything\" >nul
-  copy /Y "packaging\everything\README.txt" "%DIST%\everything\" >nul 2>nul
-  rem portable config: silent, no UAC, no taskbar button
-  (
-    echo run_as_admin=0
-    echo show_in_taskbar=0
-    echo minimize_to_tray=1
-    echo show_tray_icon=1
-  ) > "%DIST%\everything\Everything.ini"
-) else (
-  echo [WARN] packaging\everything not found, Everything auto-find disabled
+rem ---------- third-party licenses ----------
+if exist "packaging\licenses" (
+  echo       Copying third-party licenses...
+  mkdir "%DIST%\licenses" >nul 2>nul
+  copy /Y "packaging\licenses\*" "%DIST%\licenses\" >nul
 )
 
 echo.

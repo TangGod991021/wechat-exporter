@@ -20,9 +20,9 @@
 
 - 程序会自动扫描数据目录并列出账号
 - 如果未找到（例如改过微信的存储路径），点击「Everything 查找」：
-  - 程序已内置 [Everything](https://www.voidtools.com/zh-cn/) 便携版（`everything\` 目录），无需另行安装
+  - 程序已内置 [Everything](https://www.voidtools.com/zh-cn/) 便携版（`_internal\everything\`），无需另行安装
   - Everything 未运行时会自动静默启动：不弹窗、不占任务栏、不弹 UAC，仅在托盘保留图标；随后通过 `es.exe` 秒级搜索 `db_storage` / `xwechat_files` 并自动填入数据目录
-  - 首次启动需要几秒钟建立索引；索引文件保存在 `everything\Everything.db`，之后查询是即时的
+  - 首次启动需要几秒钟建立索引；索引文件保存在 `_internal\everything\Everything.db`，之后查询是即时的
   - 程序退出时会自动关闭由它启动的 Everything 实例，不影响你自行安装/运行的 Everything
   - 若内置文件缺失，会回退为本地扫描（常见目录 + 各盘符下与微信相关的目录）
 - 也可以点击「选择数据目录」手动指定 `xwechat_files` 所在目录，或选择它的上级目录：程序会在所选目录内递归查找含 `db_storage` 的账号文件夹

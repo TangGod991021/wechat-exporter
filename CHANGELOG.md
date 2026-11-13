@@ -6,6 +6,9 @@
 
 ### 修复
 
+- 发布包不再携带 `config.json`；打包重跑时保留已有 runtime 备份，避免数据丢失
+- `app.spec` 打包 Everything 与第三方许可证，手动构建不再缺文件
+- 修正 NOTICE：FFmpeg 经 PyAV 随包分发，补充 GPL/LGPL 与 Everything 许可文本
 - 导出语音按 username 目录查找，修复有备注的联系人语音全部丢失
 - 转发聊天记录图片通过 `hardlink.db` 映射消息 md5 到本地文件
 - 解密改为临时文件 + 原子替换，校验源库整页对齐与输出 SQLite 头；跳过时校验大小

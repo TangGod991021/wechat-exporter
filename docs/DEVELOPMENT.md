@@ -64,21 +64,24 @@ npm run build
 .venv\Scripts\pyinstaller packaging\app.spec --noconfirm --clean
 ```
 
-打包模式下 `app/config.py` 会把 `BASE_DIR` 定位到 exe 同级目录，因此 `config.json`、`data\`、`media\`、`exports\` 都随程序文件夹一起移动。
+`app.spec` 已把 `packaging/everything`、`packaging/licenses` 打进产物（`_internal/`），
+手动构建也会包含 Everything 与许可证。
+
+打包模式下 `app/config.py` 会把 `BASE_DIR` 定位到 exe 同级目录，因此 `config.json`、`data\`、`media\`、`exports\` 都随程序文件夹一起移动。**发布包不要携带 `config.json`**：它包含绝对路径与本机账号；`build-portable.bat` 会保留开发机 runtime 数据但删除产物中的 `config.json`。
 
 产物为 `dist\WeChatExporter\WeChatExporter.exe`。文件属性（描述、产品名、版本、版权）由 `packaging/version_info.txt` 提供；升级版本时需同时修改 `app/__init__.py` 与 `packaging/version_info.txt`。
 
 ## 测试
 
 ```bash
-# 富消息解析（离线合成数据）
-.venv\Scripts\python tests\test_parser.py
-
-# 子进程隐藏窗口标志
-.venv\Scripts\python tests\test_proc.py
-
-# 按会话过滤图片 / 语音 / WxAM 与媒体标识收集
-.venv\Scripts\python tests\test_prepare.py
+.venv\Scripts\python tests\test_api_security.py   # 令牌 / Host / 路径白名单 / URL scheme
+.venv\Scripts\python tests\test_integrity.py      # 语音、转发图片、解密原子化、分片
+.venv\Scripts\python tests\test_parser.py         # 富消息解析（离线合成数据）
+.venv\Scripts\python tests\test_prepare.py        # 按会话过滤媒体与标识收集
+.venv\Scripts\python tests\test_video_export.py   # 视频转码范围与缓存
+.venv\Scripts\python tests\test_html_lightbox.py  # 导出 HTML 灯箱
+.venv\Scripts\python tests\test_proc.py           # 子进程隐藏窗口标志
+.venv\Scripts\python tests\test_discovery.py      # 递归查找与 Everything 结果归一化
 
 # 真实数据库抽样（可选）
 set WECHAT_EXPORTER_DB=D:\path\to\message_0.db

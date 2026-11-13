@@ -18,7 +18,9 @@ for pkg in ('webview',):
 hiddenimports += ['clr', 'pilk', 'zstandard', 'Crypto', 'PIL', 'av',
                   'multiprocessing', 'multiprocessing.spawn']
 
-datas += [(os.path.join(ROOT, 'webui', 'dist'), os.path.join('webui', 'dist'))]
+datas += [(os.path.join(ROOT, 'webui', 'dist'), os.path.join('webui', 'dist')),
+          (os.path.join(ROOT, 'packaging', 'everything'), 'everything'),
+          (os.path.join(ROOT, 'packaging', 'licenses'), 'licenses')]
 
 a = Analysis(
     [os.path.join(ROOT, 'run.py')],
