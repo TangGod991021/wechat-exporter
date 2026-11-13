@@ -12,6 +12,7 @@
 ### 修复
 
 - 打包后 `config.json` 与 `data/`、`media/`、`exports/` 固定落在 exe 同级目录，整个文件夹可直接拷贝到其他电脑运行
+- 修复双击 exe 无反应：窗口模式下 `sys.stdout/stderr` 为 `None`，uvicorn 日志初始化异常导致后台线程静默退出；启动时用 `devnull` 兜底，并在启动失败时写入 `启动错误.log` 并弹窗提示
 
 ## [0.1.0] - 2026-11-13
 
