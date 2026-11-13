@@ -25,6 +25,18 @@
 
 ---
 
+## 界面预览
+
+> 截图使用虚构演示数据，不含真实账号与聊天内容；完整截图（含深色模式）见 [docs/SCREENSHOTS.md](docs/SCREENSHOTS.md)。
+
+| 选择账号 | 选择会话 |
+|---|---|
+| ![选择账号](docs/screenshots/01-accounts-light.png) | ![选择会话](docs/screenshots/03-sessions-light.png) |
+| **消息预览（富消息渲染）** | **导出完成** |
+| ![消息预览](docs/screenshots/04-chat-preview-light.png) | ![导出完成](docs/screenshots/08-export-done-light.png) |
+
+---
+
 ## 环境要求
 
 | 项目 | 要求 |
@@ -179,7 +191,9 @@ app/
 webui/                 # Vue 3 + Naive UI 前端
 packaging/app.spec     # PyInstaller 配置
 tests/                 # 测试
+tools/                 # 辅助脚本（界面截图等）
 docs/                  # 架构、使用、开发文档
+  screenshots/         # 界面截图（虚构演示数据）
 ```
 
 ---

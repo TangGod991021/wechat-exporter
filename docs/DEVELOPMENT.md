@@ -67,6 +67,22 @@ set WECHAT_EXPORTER_DB=D:\path\to\message_0.db
 .venv\Scripts\python tests\test_parser.py
 ```
 
+## 更新界面截图
+
+`docs/screenshots/` 中的截图用于 README 与文档展示，由脚本自动生成（接口全部使用虚构演示数据，不读取本机微信数据）：
+
+```bash
+# 仅首次：安装 Playwright
+pip install playwright
+playwright install chromium
+
+# 需先构建 webui/dist
+cd webui && npm run build && cd ..
+python tools/capture_screenshots.py
+```
+
+修改界面布局或配色后，请重新运行脚本并提交更新后的截图。说明见 `docs/SCREENSHOTS.md`。
+
 ## 新增消息类型
 
 1. 在 `app/core/message_parser.py` 的 `_parse_appmsg()` 中增加分支
