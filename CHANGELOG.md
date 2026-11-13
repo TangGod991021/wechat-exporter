@@ -25,6 +25,7 @@
 ### 修复
 
 - 修复 `make_store` 误用未定义变量 `c` 导致会话 / 导出接口 500（应为 `cfg`）
+- 修复前端调用 `api.startCore` 方法名不匹配导致「建立会话索引」报错（`startCore is not a function`）
 
 - 打包后 `config.json` 与 `data/`、`media/`、`exports/` 固定落在 exe 同级目录，整个文件夹可直接拷贝到其他电脑运行
 - 修复双击 exe 无反应：窗口模式下 `sys.stdout/stderr` 为 `None`，uvicorn 日志初始化异常导致后台线程静默退出；启动时用 `devnull` 兜底，并在启动失败时写入 `启动错误.log` 并弹窗提示
