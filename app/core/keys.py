@@ -306,8 +306,11 @@ def extract_keys(db_dir, progress=None):
                     'message': '微信未运行，请先打开并登录微信'}
 
     # 策略 1：4.1.11+ Config.Cipher
+    saw_permission_error = False
     for i, (pid, _threads) in enumerate(pids):
         found, stats = config_cipher_scan(pid)
+        if stats.get('error') == 'open-process-failed':
+            saw_permission_error = True
         if found:
             keys = {d['rel']: {'enc_key': found[d['salt']], 'salt': d['salt']}
                     for d in dbs if d['salt'] in found}
@@ -319,8 +322,10 @@ def extract_keys(db_dir, progress=None):
             progress(int((i + 1) / len(pids) * 50))
 
     # 策略 2：4.0 明文缓存
+    sub_progress = (lambda p, _p=progress: _p(50 + int(p * 0.5))) \
+        if progress else None
     for pid, _threads in pids:
-        found, stats = plaintext_scan(pid, dbs, progress)
+        found, stats = plaintext_scan(pid, dbs, sub_progress)
         if found:
             keys = {d['rel']: {'enc_key': found[d['salt']], 'salt': d['salt']}
                     for d in dbs if d['salt'] in found}
@@ -329,5 +334,9 @@ def extract_keys(db_dir, progress=None):
                 return keys, {'mode': 'plaintext', 'pid': pid,
                               'stats': stats, 'missing': missing}
 
+    if saw_permission_error:
+        return {}, {'error': 'permission-denied',
+                    'message': '无法读取微信进程内存。请右键以管理员身份运行本程序后重试'
+                               '（或让微信以普通权限运行）。'}
     return {}, {'error': 'key-not-found',
                 'message': '未能提取到密钥。请确认微信已登录，或该版本尚未适配。'}

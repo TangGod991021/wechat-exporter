@@ -184,6 +184,8 @@ function linkify(s: string) {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 a {
   color: #576b95;
@@ -204,6 +206,7 @@ a {
   margin-bottom: 2px;
 }
 .q-text {
+  white-space: pre-wrap;
   word-break: break-word;
 }
 .reply {

@@ -464,8 +464,14 @@ def _wechat_roots_from_paths(paths) -> list:
         else:
             continue
         root = os.path.dirname(account)
-        if root:
-            roots.setdefault(root.lower(), root)
+        if not root:
+            continue
+        # 降低误判：账号目录应符合 wxid_xxx_abcd，或数据根名为 xwechat_files
+        account_name = os.path.basename(account)
+        if not FOLDER_RE.match(account_name) and \
+                os.path.basename(root).lower() != 'xwechat_files':
+            continue
+        roots.setdefault(root.lower(), root)
     return list(roots.values())
 
 
@@ -539,8 +545,22 @@ def locate_wechat_roots() -> dict:
         'source': source,
         'everything_available': bool(es_exe),
         'es_exe': es_exe,
-        'roots': result,
+        'roots': _dedupe_root_entries(result),
     }
+
+
+def _dedupe_root_entries(entries: list) -> list:
+    """父子目录可能扫到同一批账号，按 base_dir 去重，避免重复展示/扫描"""
+    seen_accounts = set()
+    unique = []
+    for entry in entries:
+        fresh = [a for a in entry['accounts']
+                 if a['base_dir'] not in seen_accounts]
+        if not fresh:
+            continue
+        seen_accounts.update(a['base_dir'] for a in fresh)
+        unique.append({'path': entry['path'], 'accounts': fresh})
+    return unique
 
 
 def find_kvcomm_codes() -> list:

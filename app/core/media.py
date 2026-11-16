@@ -31,6 +31,15 @@ def resolve_ffmpeg(ffmpeg='ffmpeg') -> str:
     return shutil.which(ffmpeg or 'ffmpeg') or ''
 
 
+def file_md5(path: str, chunk: int = 8 * 1024 * 1024) -> str:
+    """分块计算文件 MD5，避免大视频整文件读入内存"""
+    h = hashlib.md5()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(chunk), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
 def ffmpeg_status(ffmpeg='ffmpeg') -> dict:
     """FFmpeg/ffprobe 可用性，供界面提示"""
     path = resolve_ffmpeg(ffmpeg)
@@ -331,7 +340,7 @@ def build_video_index(video_roots, cache_path, progress=None):
             md5 = ent['md5']
         else:
             try:
-                md5 = hashlib.md5(open(f, 'rb').read()).hexdigest()
+                md5 = file_md5(f)
             except OSError:
                 continue
             cache[f] = {'mtime': st.st_mtime, 'size': st.st_size, 'md5': md5}

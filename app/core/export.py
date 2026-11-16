@@ -450,7 +450,9 @@ def _record_html(c, uri_fn=None):
         if r.get('media'):
             uri = uri_fn(r['media'])
             low = r['media'].lower()
-            if low.endswith('.mp4'):
+            if not uri:
+                media_html = '<span class="missing">[媒体缺失]</span>'
+            elif low.endswith('.mp4'):
                 media_html = f'<video class="ri-img" controls src="{uri}"></video>'
             elif low.endswith('.wav'):
                 media_html = f'<audio controls src="{uri}"></audio>'
@@ -530,7 +532,8 @@ h2{{text-align:center;color:#333}}
 .msg{{margin:10px 0;display:flex;flex-direction:column}}
 .meta{{font-size:12px;color:#999;margin-bottom:2px}}
 .bubble{{background:#fff;border-radius:10px;padding:8px 12px;max-width:70%;width:fit-content;
-box-shadow:0 1px 3px rgba(0,0,0,.06);white-space:normal;word-break:break-word;line-height:1.6}}
+box-shadow:0 1px 3px rgba(0,0,0,.06);white-space:pre-wrap;word-break:break-word;line-height:1.6}}
+.missing{{color:#c33;font-size:12px}}
 .me{{align-items:flex-end}} .me .bubble{{background:#95ec69}}
 .me .meta{{text-align:right}}
 img.chat-img{{max-width:320px;border-radius:8px;display:block;margin-top:4px}}
@@ -578,12 +581,13 @@ box-shadow:0 20px 60px rgba(0,0,0,.5);object-fit:contain;background:#fff}}
         if m['media']:
             uri = uri_fn(m['media'])
             low = m['media'].lower()
-            if low.endswith('.wav'):
+            if not uri:
+                body += '<br><span class="missing">[媒体缺失]</span>'
+            elif low.endswith('.wav'):
                 body += f'<br><audio controls src="{uri}"></audio>'
             elif low.endswith('.mp4'):
-                poster_attr = ''
-                if m.get('poster'):
-                    poster_attr = f' poster="{uri_fn(m["poster"])}"'
+                poster = uri_fn(m['poster']) if m.get('poster') else ''
+                poster_attr = f' poster="{poster}"' if poster else ''
                 body += (f'<br><video class="chat-video" controls{poster_attr} '
                          f'src="{uri}"></video>')
             else:
@@ -674,10 +678,14 @@ def _collect_media(msgs, chat_dir, progress=None):
             if r.get('media'):
                 tasks.append((r['media'], m.get('ts')))
     media_map = {}
+    missing = []
     counts = {'images': 0, 'videos': 0, 'audio': 0, 'files': 0}
     total = len(tasks)
     for i, (src, ts) in enumerate(tasks, 1):
-        if not src or src in media_map or not os.path.exists(src):
+        if not src or src in media_map:
+            continue
+        if not os.path.exists(src):
+            missing.append(src)
             continue
         kind = _media_kind_dir(src)
         name = _media_name(src, ts, kind)
@@ -692,12 +700,13 @@ def _collect_media(msgs, chat_dir, progress=None):
         try:
             _link_or_copy(src, dest)
         except OSError:
+            missing.append(src)
             continue
         media_map[src] = f'{kind}/{os.path.basename(dest)}'
         counts[kind] = counts.get(kind, 0) + 1
         if progress and i % 20 == 0:
             progress(int(i / total * 100) if total else 100, f'复制媒体 {i}/{total}')
-    return media_map, counts
+    return media_map, counts, missing
 
 
 def _relativize(msgs, media_map):
@@ -841,8 +850,9 @@ def export_chats(store, targets, formats, since, until, out_dir,
                     overall = ((idx - 1) + tc_share
                                + p / 100 * (0.8 - tc_share)) / total * 100
                     progress(int(overall), msg)
-            media_map, counts = _collect_media(msgs, chat_dir, cp_progress)
-            uri_fn = lambda p: media_map.get(p) or _default_uri(p)  # noqa: E731
+            media_map, counts, missing = _collect_media(msgs, chat_dir, cp_progress)
+            # 归档模式不再回退绝对 file:///：缺失媒体在 HTML 中标记出来
+            uri_fn = lambda p: media_map.get(p) or ''  # noqa: E731
             prefix = os.path.join(chat_dir, '聊天记录')
             html_path = os.path.join(chat_dir, 'index.html')
         else:
@@ -896,6 +906,7 @@ def export_chats(store, targets, formats, since, until, out_dir,
                 'until': until,
                 'exported_at': datetime.now().isoformat(timespec='seconds'),
                 'media': counts,
+                'missing_media': missing,
                 'files': [os.path.relpath(f, chat_dir).replace('\\', '/')
                           for f in chat_files],
             }

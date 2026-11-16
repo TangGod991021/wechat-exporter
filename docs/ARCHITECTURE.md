@@ -32,7 +32,7 @@ app.exe（pywebview 原生窗口）
 | 模块 | 职责 |
 |---|---|
 | `app/main.py` | 单实例互斥、端口重试与 `/api/bootstrap` 身份校验、pywebview 窗口 |
-| `app/config.py` | 配置读写、账号目录推导 |
+| `app/config.py` | 配置原子读写、只读目录回退 `%LOCALAPPDATA%`、账号目录推导 |
 | `app/api/routes.py` | 路由、任务编排、静态资源挂载 |
 | `app/core/discovery.py` | 数据目录 / 账号 / 微信版本 / kvcomm code 发现；集成 Everything（`es.exe` / HTTP JSON）快速定位 `xwechat_files`，不可用时回退本地递归扫描 |
 | `app/core/keys.py` | 密钥提取（两种策略） |
@@ -48,6 +48,9 @@ app.exe（pywebview 原生窗口）
 - 端口随机探测后绑定，被占用时重试（最多 3 个候选端口）
 - `wait_server` 除探测端口外还会请求 `/api/bootstrap` 并校验 `version`，避免误连其他本地服务
 - 启动等待上限 60 秒；成功后在 `.runtime_url` 写入带令牌的地址，退出时删除
+- 配置写入使用临时文件 + `os.replace`；损坏的 `config.json` 会改名为 `.json.bad`
+- 程序目录不可写（如 Program Files）时，配置与数据目录回退到 `%LOCALAPPDATA%\WeChatExporter`
+- 后台任务失败会追加到 `运行日志.log`（当前配置目录）
 
 ## 3. 微信 4.x 数据结构要点
 
@@ -180,7 +183,9 @@ page >1：[ciphertext 4016][IV 16][HMAC 64]
    文件名附加 username 摘要，避免同名会话互相覆盖
 
 单个会话导出失败不会中断整批：错误写入返回值 `errors` 与批次 `manifest.json`。
-Windows 非法字符、保留设备名（CON/NUL 等）会在文件名中处理。
+归档模式下媒体复制失败会记入 `missing_media`，HTML 中标记 `[媒体缺失]`，不再回退绝对
+`file:///` 路径；气泡使用 `white-space: pre-wrap` 保留换行。Windows 非法字符、保留设备名
+（CON/NUL 等）会在文件名中处理。
 
 媒体命名：`YYYY-MM-DD_HH-MM-SS_哈希前8位.ext`（音频为 local_id）。
 

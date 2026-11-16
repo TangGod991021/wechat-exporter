@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import __version__
-from app.config import load_config, save_config, account_paths
+from app.config import BASE_DIR, load_config, save_config, account_paths
 from app.core import discovery, keys, decrypt, media, prepare
 from app.core.export import ChatStore, export_chats
 from app.core.jobs import JobManager, JobBusy
@@ -153,7 +153,7 @@ def account_state(cfg, account):
 
 def create_app(token: str = ''):
     app = FastAPI(title='微信聊天记录导出', version=__version__)
-    mgr = JobManager()
+    mgr = JobManager(log_file=Path(BASE_DIR) / '运行日志.log')
     app.state.mgr = mgr
     app.state.cfg = load_config()
 

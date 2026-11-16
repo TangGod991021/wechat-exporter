@@ -49,10 +49,20 @@ class Job:
 
 
 class JobManager:
-    def __init__(self):
+    def __init__(self, log_file=None):
         self._jobs = {}
         self._active = {}   # kind -> job id
         self._lock = threading.Lock()
+        self.log_file = str(log_file) if log_file else ''
+
+    def _write_log(self, text):
+        if not self.log_file:
+            return
+        try:
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] {text}\n')
+        except OSError:
+            pass
 
     def get(self, job_id):
         with self._lock:
@@ -81,6 +91,8 @@ class JobManager:
                 job.status = 'error'
                 job.error = f'{type(e).__name__}: {e}'
                 job.logs.append(traceback.format_exc()[-1500:])
+                self._write_log(f"[{kind}] {job.id} FAILED {job.error}\n"
+                                f'{traceback.format_exc()[-4000:]}')
             finally:
                 job.finished = time.time()
                 with self._lock:

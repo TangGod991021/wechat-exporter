@@ -1,15 +1,37 @@
 # -*- coding: utf-8 -*-
 """配置管理：所有路径集中在这里，避免散落硬编码"""
 import json
+import os
 import sys
 from pathlib import Path
 
-if getattr(sys, 'frozen', False):
-    # 打包后：config.json 与 data/media/exports 放在 exe 同级，便于整个文件夹拷贝使用
-    BASE_DIR = Path(sys.executable).resolve().parent
-else:
-    BASE_DIR = Path(__file__).resolve().parent.parent
 
+def _default_base_dir() -> Path:
+    if getattr(sys, 'frozen', False):
+        # 打包后：config.json 与 data/media/exports 放在 exe 同级，便于整个文件夹拷贝使用
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+def _pick_base_dir() -> Path:
+    """优先使用程序目录；只读位置（如 Program Files）回退到 %LOCALAPPDATA%"""
+    base = _default_base_dir()
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        probe = base / '.write_test'
+        probe.write_text('ok', encoding='utf-8')
+        probe.unlink()
+        return base
+    except OSError:
+        fallback = Path(os.environ.get('LOCALAPPDATA', str(base))) / 'WeChatExporter'
+        try:
+            fallback.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        return fallback
+
+
+BASE_DIR = _pick_base_dir()
 CONFIG_FILE = BASE_DIR / 'config.json'
 
 DEFAULTS = {
@@ -28,13 +50,20 @@ def load_config() -> dict:
         try:
             cfg.update(json.loads(CONFIG_FILE.read_text(encoding='utf-8')))
         except Exception:
-            pass
+            # 损坏的配置备份保留，避免下次静默覆盖；使用默认值继续启动
+            try:
+                CONFIG_FILE.replace(CONFIG_FILE.with_suffix('.json.bad'))
+            except OSError:
+                pass
     return cfg
 
 
 def save_config(cfg: dict):
-    CONFIG_FILE.write_text(
-        json.dumps(cfg, ensure_ascii=False, indent=2), encoding='utf-8')
+    """临时文件 + 原子替换，避免断电/并发写产生半截 JSON"""
+    tmp = CONFIG_FILE.with_suffix('.json.tmp')
+    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+                   encoding='utf-8')
+    os.replace(tmp, CONFIG_FILE)
 
 
 def account_paths(cfg: dict, folder: str) -> dict:

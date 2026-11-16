@@ -48,6 +48,28 @@ def test_job_mutex_and_cancel():
     print('  ok  任务互斥与取消')
 
 
+def test_job_error_written_to_log():
+    with tempfile.TemporaryDirectory() as td:
+        log_path = os.path.join(td, 'run.log')
+        mgr = JobManager(log_file=log_path)
+
+        def boom(job):
+            raise ValueError('boom')
+
+        jid = mgr.start('demo', boom)
+        deadline = time.time() + 5
+        while time.time() < deadline and mgr.get(jid)['status'] == 'running':
+            time.sleep(0.05)
+        assert mgr.get(jid)['status'] == 'error'
+        for _ in range(100):
+            if os.path.exists(log_path):
+                break
+            time.sleep(0.02)
+        text = open(log_path, encoding='utf-8').read()
+        assert 'FAILED' in text and 'ValueError' in text, text
+    print('  ok  任务错误写入运行日志')
+
+
 def test_paging_same_second():
     username = 'wxid_demo'
     table = 'Msg_' + hashlib.md5(username.encode()).hexdigest()
@@ -84,6 +106,7 @@ def test_paging_same_second():
 
 def main():
     test_job_mutex_and_cancel()
+    test_job_error_written_to_log()
     test_paging_same_second()
     print('任务与分页测试全部通过')
 
