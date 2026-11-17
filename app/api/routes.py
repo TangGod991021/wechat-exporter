@@ -269,12 +269,25 @@ def create_app(token: str = ''):
 
         def run(job):
             data = json.loads(keys_file.read_text(encoding='utf-8'))
+            rels = decrypt.chat_db_rels(acc['db_dir'])
+            missing_keys = [r for r in rels if r not in data['keys']]
             job.update(2, '正在解密会话索引与消息库...')
             res = decrypt.decrypt_all(
                 acc['db_dir'], paths['data'], data['keys'],
-                only_rels=decrypt.chat_db_rels(acc['db_dir']),
+                only_rels=rels,
                 progress=lambda p, m='': job.update(2 + int(p * 0.96), m))
-            job.update(100, f"会话数据就绪（成功 {res['ok']}，跳过 {res['skipped']}）")
+            res['missing_keys'] = missing_keys
+            failed = [r['rel'] for r in res['results']
+                      if r['status'] not in ('ok', 'skipped')]
+            res['failed_dbs'] = failed
+            if missing_keys:
+                job.update(100, f"会话数据就绪，但有 {len(missing_keys)} 个消息库缺少密钥"
+                                f"（{', '.join(missing_keys[:3])}），请重新提取密钥")
+            elif failed:
+                job.update(100, f"会话数据就绪，但 {len(failed)} 个库解密失败"
+                                f"（{', '.join(failed[:3])}）")
+            else:
+                job.update(100, f"会话数据就绪（成功 {res['ok']}，跳过 {res['skipped']}）")
             return res
 
         return start_job('core', run)
@@ -347,11 +360,15 @@ def create_app(token: str = ''):
 
         def run(job):
             data = json.loads(keys_file.read_text(encoding='utf-8'))
+            rels = decrypt.chat_db_rels(acc['db_dir'])
+            missing_keys = [r for r in rels if r not in data['keys']]
             job.update(1, '正在刷新会话数据...')
-            decrypt.decrypt_all(
+            refresh = decrypt.decrypt_all(
                 acc['db_dir'], paths['data'], data['keys'],
-                only_rels=decrypt.chat_db_rels(acc['db_dir']),
+                only_rels=rels,
                 progress=lambda p, m='': job.update(1 + int(p * 0.09), m))
+            failed_dbs = [r['rel'] for r in refresh['results']
+                          if r['status'] not in ('ok', 'skipped')]
             store = make_store(c, acc)
             job.update(10, f'正在准备 {len(body.targets)} 个所选会话...')
             result = prepare.prepare_selected_media(
@@ -361,6 +378,16 @@ def create_app(token: str = ''):
                 c.get('ffmpeg', 'ffmpeg'), workers=body.workers,
                 progress=lambda p, m='': job.update(10 + int(p * 0.9), m))
             problems = []
+            if missing_keys:
+                problems.append(
+                    f'有 {len(missing_keys)} 个消息库缺少密钥（'
+                    + ', '.join(missing_keys[:3]) + '），历史消息可能缺失，请重新提取密钥')
+            if failed_dbs:
+                problems.append(
+                    f'{len(failed_dbs)} 个消息库解密失败（'
+                    + ', '.join(failed_dbs[:3]) + '），历史消息可能缺失')
+            result['missing_keys'] = missing_keys
+            result['decrypt_failed'] = failed_dbs
             for key, label in (('images', '图片'), ('wxam', 'WxAM'),
                                ('voices', '语音')):
                 st = result.get(key) or {}
@@ -420,14 +447,15 @@ def create_app(token: str = ''):
 
     @app.get('/api/chat')
     def chat(account: str, username: str, limit: int = 100,
-             before: int | None = None, before_id: int | None = None):
+             before: int | None = None, before_id: int | None = None,
+             before_sort: int | None = None):
         if limit < 1 or limit > 500:
             raise HTTPException(400, 'limit 必须在 1-500 之间')
         c = cfg()
         acc = get_account(c, account)
         store = make_store(c, acc)
         msgs = store.messages(username, limit=limit, before_ts=before,
-                              before_id=before_id)
+                              before_id=before_id, before_sort=before_sort)
         return {'messages': msgs, 'has_more': len(msgs) >= limit}
 
     @app.post('/api/export')

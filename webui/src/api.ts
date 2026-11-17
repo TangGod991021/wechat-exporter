@@ -69,13 +69,15 @@ export const api = {
     limit = 100,
     before?: number,
     beforeId?: number,
+    beforeSort?: number,
   ) =>
     request(
       `/api/chat?account=${encodeURIComponent(account)}&username=${encodeURIComponent(
         username,
       )}&limit=${limit}` +
         (before !== undefined ? `&before=${before}` : '') +
-        (beforeId !== undefined ? `&before_id=${beforeId}` : ''),
+        (beforeId !== undefined ? `&before_id=${beforeId}` : '') +
+        (beforeSort !== undefined ? `&before_sort=${beforeSort}` : ''),
     ),
   startExport: (body: any) =>
     request('/api/export', { method: 'POST', body: JSON.stringify(body) }),

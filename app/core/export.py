@@ -55,7 +55,12 @@ class ChatStore:
         self.contact_db = os.path.join(data_dir, 'contact', 'contact.db')
         self.media_db = os.path.join(data_dir, 'message', 'media_0.db')
         self.hardlink_db = os.path.join(data_dir, 'hardlink', 'hardlink.db')
-        self.message_dbs = sorted(glob.glob(os.path.join(data_dir, 'message', 'message_*.db')))
+        # 普通会话在 message_*.db；公众号（gh_*）在 biz_message_*.db。
+        # 同一会话的消息表可能横跨多个分库（微信按时间/容量滚动写入），
+        # 因此后续所有读取都要遍历全部命中的分库并合并。
+        msg_dir = os.path.join(data_dir, 'message')
+        self.message_dbs = sorted(glob.glob(os.path.join(msg_dir, 'message_*.db'))) + \
+            sorted(glob.glob(os.path.join(msg_dir, 'biz_message_*.db')))
         self._names = None
         self._image_index = None
         self._video_index = None
@@ -126,7 +131,12 @@ class ChatStore:
         return out
 
     def table_map(self, progress=None):
-        """建立一次「消息表名 -> 数据库路径」映射，避免逐会话反复打开所有库"""
+        """建立「消息表名 -> 数据库路径列表」映射。
+
+        同一张 Msg_<md5> 表可能同时出现在 message_0.db、message_1.db 等多个
+        分库中（微信滚动分片）。旧实现用字典直接覆盖，只保留最后一个分库，
+        导致导出只剩较新的那部分消息，必须保留全部命中分库。
+        """
         if self._table_map is not None:
             return self._table_map
         mapping = {}
@@ -146,26 +156,39 @@ class ChatStore:
             except sqlite3.DatabaseError:
                 continue  # 尚未解密或格式不符
             for (name,) in rows:
-                mapping[name] = db
+                mapping.setdefault(name, []).append(db)
         self._table_map = mapping
         if progress:
             progress(100, f'已读取 {total} 个消息库')
         return mapping
 
-    def find_table(self, username):
+    def find_tables(self, username):
+        """返回 (包含该会话消息表的全部分库列表, 表名)"""
         name = f"Msg_{hashlib.md5(username.encode()).hexdigest()}"
-        db = self.table_map().get(name)
-        return (db, name) if db else (None, None)
+        return self.table_map().get(name, []), name
+
+    def find_table(self, username):
+        """兼容旧调用：返回第一个分库与表名"""
+        dbs, name = self.find_tables(username)
+        return (dbs[0], name) if dbs else (None, None)
 
     def message_count(self, username):
-        db, table = self.find_table(username)
-        if not table:
+        """跨全部分库统计会话消息数"""
+        dbs, table = self.find_tables(username)
+        if not dbs:
             return 0
-        c = sqlite3.connect(db)
-        try:
-            return c.execute(f'select count(*) from "{table}"').fetchone()[0]
-        finally:
-            c.close()
+        total = 0
+        for db in dbs:
+            try:
+                c = sqlite3.connect(db)
+                try:
+                    total += c.execute(
+                        f'select count(*) from "{table}"').fetchone()[0]
+                finally:
+                    c.close()
+            except sqlite3.DatabaseError:
+                continue
+        return total
 
     def table_counts(self, progress=None):
         """一次连接统计每个消息表的行数，并按库文件 mtime/size 缓存。
@@ -183,26 +206,30 @@ class ChatStore:
         if not mapping:
             report(100, '没有找到消息表')
             return {}
+        all_dbs = sorted({db for dbs in mapping.values() for db in dbs})
         sig = {}
-        for db in set(mapping.values()):
+        for db in all_dbs:
             try:
                 st = os.stat(db)
                 sig[os.path.basename(db)] = [st.st_mtime, st.st_size]
             except OSError:
                 continue
         cache_path = os.path.join(self.data_dir, 'session_counts.json')
+        # v2：旧版本只统计了单个分库，升级后必须重算，否则列表数量偏小
+        cache_ver = 2
         if os.path.exists(cache_path):
             try:
                 cached = json.load(open(cache_path, encoding='utf-8'))
-                if cached.get('sig') == sig:
+                if (cached.get('v') == cache_ver and cached.get('sig') == sig):
                     report(100, '会话数量已缓存')
                     return cached.get('counts') or {}
             except (OSError, ValueError):
                 pass
 
         by_db = {}
-        for name, db in mapping.items():
-            by_db.setdefault(db, []).append(name)
+        for name, dbs in mapping.items():
+            for db in dbs:
+                by_db.setdefault(db, []).append(name)
         total_tables = sum(len(v) for v in by_db.values()) or 1
         counts = {}
         done = 0
@@ -212,10 +239,12 @@ class ChatStore:
                 try:
                     for name in names:
                         try:
-                            counts[name] = c.execute(
+                            # 同名表可能分布在多个分库，数量必须累加
+                            n = c.execute(
                                 f'select count(*) from "{name}"').fetchone()[0]
                         except sqlite3.Error:
-                            counts[name] = 0
+                            n = 0
+                        counts[name] = counts.get(name, 0) + n
                         done += 1
                         report(15 + done / total_tables * 85,
                                f'正在统计会话消息数 {done}/{total_tables}')
@@ -227,7 +256,7 @@ class ChatStore:
             os.makedirs(self.data_dir, exist_ok=True)
             tmp = cache_path + '.tmp'
             with open(tmp, 'w', encoding='utf-8') as fh:
-                json.dump({'sig': sig, 'counts': counts}, fh)
+                json.dump({'v': cache_ver, 'sig': sig, 'counts': counts}, fh)
             os.replace(tmp, cache_path)
         except OSError:
             pass
@@ -364,40 +393,91 @@ class ChatStore:
 
     # ---------- 消息 ----------
     def messages(self, username, since=None, until=None, limit=None,
-                 before_ts=None, before_id=None):
-        db, table = self.find_table(username)
-        if not table:
+                 before_ts=None, before_id=None, before_sort=None):
+        """读取会话消息（遍历该会话所在的全部分库并合并）。
+
+        微信 4.x 会把同一会话的消息表滚动写入 message_0.db、message_1.db …
+        等多个分库；只读其中一个库会丢失大量历史消息。这里逐库查询后按
+        (create_time, sort_seq, local_id) 合并排序，分页游标也一并支持
+        sort_seq（同一秒内的毫秒级顺序）。
+        """
+        dbs, table = self.find_tables(username)
+        if not dbs:
             return []
-        c = sqlite3.connect(db)
-        try:
-            names = {rid: u for rid, u in c.execute('select rowid, user_name from Name2Id')}
-            conds, params = [], []
-            if since:
-                conds.append('create_time >= ?')
-                params.append(int(datetime.strptime(since, '%Y-%m-%d').timestamp()))
-            if until:
-                conds.append('create_time <= ?')
-                params.append(int(datetime.strptime(until, '%Y-%m-%d').timestamp()) + 86399)
-            if before_ts is not None:
-                if before_id is not None:
-                    # 复合游标：同一秒内的消息按 local_id 继续向下翻
-                    conds.append('(create_time < ? or '
-                                 '(create_time = ? and local_id < ?))')
-                    params += [int(before_ts), int(before_ts), int(before_id)]
-                else:
-                    conds.append('create_time < ?')
-                    params.append(int(before_ts))
-            where = ('where ' + ' and '.join(conds)) if conds else ''
-            sql = f'select local_id, local_type, real_sender_id, create_time, ' \
-                  f'message_content, packed_info_data from "{table}" {where} ' \
-                  f'order by create_time desc, local_id desc'
-            if limit:
-                sql += f' limit {int(limit)}'
-            rows = c.execute(sql, params).fetchall()
-        finally:
-            c.close()
+        conds, params = [], []
+        if since:
+            conds.append('create_time >= ?')
+            params.append(int(datetime.strptime(since, '%Y-%m-%d').timestamp()))
+        if until:
+            conds.append('create_time <= ?')
+            params.append(int(datetime.strptime(until, '%Y-%m-%d').timestamp()) + 86399)
+        base_conds, base_params = list(conds), list(params)
+
         contacts = self.contacts()
-        out = [self._parse(username, names, contacts, r) for r in rows]
+        merged = {}
+        for db in dbs:
+            try:
+                c = sqlite3.connect(db)
+                try:
+                    # Name2Id 只在各自分库内有效，发送人映射必须按库建立
+                    names = {rid: u for rid, u in
+                             c.execute('select rowid, user_name from Name2Id')}
+                    try:
+                        cols = {r[1] for r in
+                                c.execute(f'pragma table_info("{table}")')}
+                    except sqlite3.DatabaseError:
+                        cols = set()
+                    has_sort = 'sort_seq' in cols
+                    db_conds, db_params = list(base_conds), list(base_params)
+                    if before_ts is not None:
+                        if before_sort is not None and has_sort:
+                            # 优先使用毫秒序号；同一毫秒再按 local_id 兜底
+                            db_conds.append(
+                                '(create_time < ? or '
+                                '(create_time = ? and sort_seq < ?) or '
+                                '(create_time = ? and sort_seq = ? and local_id < ?))')
+                            db_params += [int(before_ts), int(before_ts),
+                                          int(before_sort), int(before_ts),
+                                          int(before_sort), int(before_id or 0)]
+                        elif before_id is not None:
+                            # 旧游标：同一秒内的消息按 local_id 继续向下翻
+                            db_conds.append('(create_time < ? or '
+                                            '(create_time = ? and local_id < ?))')
+                            db_params += [int(before_ts), int(before_ts),
+                                          int(before_id)]
+                        else:
+                            db_conds.append('create_time < ?')
+                            db_params.append(int(before_ts))
+                    where = ('where ' + ' and '.join(db_conds)) if db_conds else ''
+                    sort_col = 'sort_seq' if has_sort else '0'
+                    sql = (f'select local_id, local_type, real_sender_id, create_time, '
+                           f'message_content, packed_info_data, {sort_col} '
+                           f'from "{table}" {where} order by create_time desc, '
+                           + ('sort_seq desc, ' if has_sort else '')
+                           + 'local_id desc')
+                    if limit:
+                        sql += f' limit {int(limit)}'
+                    rows = c.execute(sql, db_params).fetchall()
+                finally:
+                    c.close()
+            except sqlite3.DatabaseError:
+                continue  # 单个分库异常不影响其它分库
+            for local_id, ltype, sender_id, ctime, content, packed, sort_seq in rows:
+                # 分库迁移/重复写入时可能拿到同一条消息，按完整行去重
+                key = (ctime, sort_seq or 0, local_id, sender_id or 0, content)
+                if key in merged:
+                    continue
+                m = self._parse(username, names, contacts,
+                                (local_id, ltype, sender_id, ctime, content, packed))
+                m['sort_seq'] = sort_seq or 0
+                merged[key] = m
+
+        items = sorted(merged.items(),
+                       key=lambda kv: (kv[0][0], kv[0][1], kv[0][2]),
+                       reverse=True)
+        if limit:
+            items = items[:int(limit)]
+        out = [m for _key, m in items]
         out.reverse()
         return out
 

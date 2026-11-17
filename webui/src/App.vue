@@ -369,6 +369,7 @@ async function fetchMessages(token: number) {
       100,
       first ? first.ts : undefined,
       first ? first.local_id : undefined,
+      first ? first.sort_seq : undefined,
     )
     if (token !== previewToken) return
     messages.value = [...r.messages, ...messages.value]
@@ -713,6 +714,12 @@ onMounted(() => {
                 <p class="hint">请保持微信登录状态，密钥只存在于运行中的微信进程内存里</p>
               </div>
               <div class="actions">
+                <n-button
+                  v-if="account?.has_keys"
+                  quaternary
+                  :disabled="busy"
+                  @click="doKeys"
+                >重新提取密钥</n-button>
                 <n-button type="primary" :loading="busy" :disabled="busy" @click="runKeysStep">
                   {{ account?.has_keys ? '建立会话索引' : '提取密钥' }}
                 </n-button>
@@ -755,6 +762,26 @@ onMounted(() => {
                 <div v-for="(l, i) in jobs[activeJob].logs.slice(-6)" :key="i">{{ l }}</div>
               </div>
             </div>
+
+            <n-alert
+              v-if="jobs.core.result?.missing_keys?.length"
+              type="warning"
+              style="margin-top: 16px"
+            >
+              有 {{ jobs.core.result.missing_keys.length }} 个消息库缺少密钥（{{
+                jobs.core.result.missing_keys.slice(0, 3).join('、')
+              }}），这些库中的历史消息不会被导出。请重新点击「提取密钥」。
+            </n-alert>
+
+            <n-alert
+              v-if="jobs.core.result?.failed_dbs?.length"
+              type="warning"
+              style="margin-top: 12px"
+            >
+              有 {{ jobs.core.result.failed_dbs.length }} 个消息库解密失败（{{
+                jobs.core.result.failed_dbs.slice(0, 3).join('、')
+              }}），这些库中的历史消息可能缺失。
+            </n-alert>
 
             <div
               v-if="nextLoading && jobs.sessions.status === 'running'"

@@ -107,7 +107,8 @@ def chat_db_rels(db_dir: str) -> list:
     for name in names:
         if not name.endswith('.db'):
             continue
-        if name.startswith('message_') or name.startswith('media_'):
+        if (name.startswith('message_') or name.startswith('media_')
+                or name.startswith('biz_message_')):
             rels.append('message/' + name)
     if not any(r.startswith('message/message_') for r in rels):
         rels.append('message/message_0.db')

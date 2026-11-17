@@ -59,7 +59,8 @@ app.exe（pywebview 原生窗口）
 - 长任务统一通过 `Job.update(pct, message)` 上报；密钥扫描按已读内存 MB、数据库解密按源库字节加权与页数上报，避免大库/大内存时进度长时间不动
 - `/api/sessions/refresh` 是后台任务：读取消息库、逐表 `count(*)` 时上报进度，前端显示进度条；结果写入 `data/<账号>/session_counts.json` 缓存
 - `data/<账号>/prepared.json` 记录第 4 步已准备的会话列表；`/api/bootstrap` 以 `prepared_targets` 返回，前端据此恢复「已准备」状态（刷新/重启后仍可导出）
-- `data/<账号>/session_counts.json` 按消息库 mtime/size 缓存各会话消息数，避免每次进入会话页都全量 `count(*)`
+- `data/<账号>/session_counts.json` 按消息库 mtime/size 缓存各会话消息数（v2 起跨分库累加），避免每次进入会话页都全量 `count(*)`
+- 消息分库：同一会话的 `Msg_<md5>` 表可能同时出现在 `message_0.db`、`message_1.db` … 中（微信滚动分片），`ChatStore` 保存「表名 → 分库列表」，读取时逐库查询并按 `(create_time, sort_seq, local_id)` 合并、去重；公众号消息在 `biz_message_*.db`
 
 ## 3. 微信 4.x 数据结构要点
 
