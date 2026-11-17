@@ -51,7 +51,7 @@
 | Python | 3.11+（源码运行） |
 | Node.js | 18+（构建前端） |
 | WebView2 | Win11 自带；Win10 一般随 Edge 安装 |
-| FFmpeg | 可选；用于 WxAM 转 JPG 与 HEVC 视频转码。需在 `PATH` 中，或在 `config.json` 配置 `ffmpeg` 路径 |
+| FFmpeg | **已内置**（`_internal\ffmpeg\ffmpeg.exe` / `ffprobe.exe`，启动时自动加入 `PATH`），无需另外安装；也可在 `config.json` 用 `ffmpeg` 覆盖为自定义路径 |
 
 > 微信 3.x 不在支持范围内。
 
@@ -103,7 +103,7 @@ cd webui && npm run dev
 - 目标电脑：Windows 10/11，需 WebView2 运行时（Win11 自带）
 - 首次运行会在 exe 同级目录生成 `config.json`、`data\`、`media\`、`exports\`
 - 重新打包会自动备份并恢复上述运行时数据，不会清空已解密的库与导出
-- 如需图片 / 视频处理，请另外安装 FFmpeg 并加入 `PATH`
+- FFmpeg 已内置，无需另外安装；导出默认写入 exe 同级的 `exports\`（配置中按相对路径保存）
 
 手动打包：
 
@@ -113,8 +113,8 @@ cd webui && npm run dev
 # 产物：dist\WeChatExporter\
 ```
 
-> 打包体积约 150–250 MB（含 WebView2 加载器与 Python 运行时）。
-> 如需分发 HEVC 转码能力，请同时提供 FFmpeg，并遵守其 LGPL/GPL 许可。
+> 打包体积约 350–450 MB（含 WebView2 加载器、Python 运行时与内置 FFmpeg）。
+> 内置 FFmpeg 采用 GPLv3 构建，分发时请保留 `licenses/` 中的许可声明。
 
 ---
 

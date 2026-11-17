@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from app import __version__
 from app.config import BASE_DIR, load_config, save_config, account_paths
-from app.core import discovery, keys, decrypt, media, prepare
+from app.core import discovery, keys, decrypt, media, prepare, tools
 from app.core.export import ChatStore, export_chats
 from app.core.jobs import JobManager, JobBusy
 
@@ -122,19 +122,13 @@ def account_state(cfg, account):
                 info['nickname'] = account['username']
         except Exception:
             pass
-    images = Path(paths['images'])
-    voices = Path(paths['voices'])
-    img_count = sum(1 for _ in images.rglob('*')
-                    if _.suffix.lower() in ('.jpg', '.png', '.webp', '.gif')) if images.exists() else 0
-    voice_count = sum(1 for _ in voices.rglob('*.wav')) if voices.exists() else 0
-    video_cache = Path(paths['images']).parent / 'video_index.json'
-    video_count = 0
-    if video_cache.exists():
-        try:
-            from app.core.media import load_video_index
-            video_count = len(load_video_index(str(video_cache)))
-        except Exception:
-            video_count = 0
+    # 已准备（第 4 步）的会话列表：落盘保存，重启/刷新后仍可继续导出
+    prepared_targets = []
+    try:
+        record = json.loads((data_root / 'prepared.json').read_text(encoding='utf-8'))
+        prepared_targets = [t for t in record.get('targets', []) if isinstance(t, str)]
+    except (OSError, ValueError, AttributeError):
+        prepared_targets = []
     return {
         **account,
         'nickname': info.get('nickname') or account['username'],
@@ -142,9 +136,7 @@ def account_state(cfg, account):
         'core_ready': core_ready,
         'messages_ready': messages_ready,
         'decrypted': decrypted,
-        'images_decoded': img_count,
-        'voices_decoded': voice_count,
-        'videos_indexed': video_count,
+        'prepared_targets': prepared_targets,
         'data_dir': paths['data'],
         'images_dir': paths['images'],
         'voices_dir': paths['voices'],
@@ -152,6 +144,7 @@ def account_state(cfg, account):
 
 
 def create_app(token: str = ''):
+    tools.ensure_tools_on_path()
     app = FastAPI(title='微信聊天记录导出', version=__version__)
     mgr = JobManager(log_file=Path(BASE_DIR) / '运行日志.log')
     app.state.mgr = mgr
@@ -242,9 +235,10 @@ def create_app(token: str = ''):
         paths = account_paths(c, acc['folder'])
 
         def run(job):
-            job.update(5, '正在扫描微信内存...')
+            job.update(2, '正在读取微信进程内存以提取密钥...')
             found, meta = keys.extract_keys(
-                acc['db_dir'], progress=lambda p: job.update(5 + int(p * 0.65)))
+                acc['db_dir'],
+                progress=lambda p, m='': job.update(5 + int(p * 0.65), m))
             if not found:
                 raise RuntimeError(meta.get('message') or meta.get('error') or '未找到密钥')
             Path(paths['data']).mkdir(parents=True, exist_ok=True)
@@ -255,7 +249,7 @@ def create_app(token: str = ''):
             core = decrypt.decrypt_all(
                 acc['db_dir'], paths['data'], found,
                 only_rels=decrypt.CORE_DB_RELS,
-                progress=lambda p: job.update(70 + int(p * 0.3)))
+                progress=lambda p, m='': job.update(70 + int(p * 0.3), m))
             job.update(100, f"模式 {meta.get('mode')}，命中 {len(found)} 个库，会话索引就绪")
             return {'mode': meta.get('mode'), 'count': len(found),
                     'missing': meta.get('missing', []), 'stats': meta.get('stats'),
@@ -279,7 +273,7 @@ def create_app(token: str = ''):
             res = decrypt.decrypt_all(
                 acc['db_dir'], paths['data'], data['keys'],
                 only_rels=decrypt.chat_db_rels(acc['db_dir']),
-                progress=lambda p: job.update(2 + int(p * 0.96)))
+                progress=lambda p, m='': job.update(2 + int(p * 0.96), m))
             job.update(100, f"会话数据就绪（成功 {res['ok']}，跳过 {res['skipped']}）")
             return res
 
@@ -299,7 +293,7 @@ def create_app(token: str = ''):
             job.update(2, f"解密 {len(data['keys'])} 个数据库...")
             res = decrypt.decrypt_all(
                 acc['db_dir'], paths['data'], data['keys'],
-                progress=lambda p: job.update(2 + int(p * 0.95)))
+                progress=lambda p, m='': job.update(2 + int(p * 0.95), m))
             job.update(100, f"成功 {res['ok']}，跳过 {res['skipped']}，失败 {res['failed']}")
             return res
 
@@ -357,7 +351,7 @@ def create_app(token: str = ''):
             decrypt.decrypt_all(
                 acc['db_dir'], paths['data'], data['keys'],
                 only_rels=decrypt.chat_db_rels(acc['db_dir']),
-                progress=lambda p: job.update(1 + int(p * 0.09)))
+                progress=lambda p, m='': job.update(1 + int(p * 0.09), m))
             store = make_store(c, acc)
             job.update(10, f'正在准备 {len(body.targets)} 个所选会话...')
             result = prepare.prepare_selected_media(
@@ -379,8 +373,18 @@ def create_app(token: str = ''):
                 problems.append(f'视频编码探测失败 {video["probe_failed"]} 个（FFmpeg 可能缺失）')
             if video.get('failed'):
                 problems.append(f'视频转码失败 {video["failed"]} 个')
+            # 记录已准备的会话：重启程序或刷新页面后仍可直接进入导出
+            try:
+                (Path(paths['data']) / 'prepared.json').write_text(
+                    json.dumps({'targets': body.targets,
+                                'ts': datetime.now().isoformat(timespec='seconds'),
+                                'problems': problems},
+                               ensure_ascii=False), encoding='utf-8')
+            except OSError:
+                pass
             if problems:
-                job.update(99, '准备完成但有异常：' + '；'.join(problems[:4]))
+                result['problems'] = problems
+                job.update(100, '准备完成但有异常：' + '；'.join(problems[:4]))
             else:
                 job.update(100, '所选会话数据准备完成')
             return result
@@ -392,12 +396,27 @@ def create_app(token: str = ''):
         c = cfg()
         acc = get_account(c, account)
         store = make_store(c, acc)
-        items = store.sessions()
-        counts = {it['username']: store.message_count(it['username']) for it in items}
-        for it in items:
-            it['count'] = counts.get(it['username'], 0)
+        items = store.sessions_with_counts()
         items.sort(key=lambda x: (x['count'] == 0, -x['count']))
         return {'sessions': items}
+
+    @app.post('/api/sessions/refresh')
+    def start_sessions_refresh(body: AccountBody):
+        """解析会话列表（后台任务，带进度）；完成后返回完整列表
+
+        数据量大时首屏统计消息数可能持续较久，由前端轮询任务进度并显示进度条。
+        """
+        c = cfg()
+        acc = get_account(c, body.account)
+
+        def run(job):
+            store = make_store(c, acc)
+            items = store.sessions_with_counts(
+                progress=lambda p, m='': job.update(p, m))
+            items.sort(key=lambda x: (x['count'] == 0, -x['count']))
+            return {'sessions': items}
+
+        return start_job('sessions', run)
 
     @app.get('/api/chat')
     def chat(account: str, username: str, limit: int = 100,

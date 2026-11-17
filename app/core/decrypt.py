@@ -7,6 +7,8 @@ import struct
 
 from Crypto.Cipher import AES
 
+from app.core.jobs import JobCancelled
+
 PAGE_SZ = 4096
 KEY_SZ = 32
 SALT_SZ = 16
@@ -41,9 +43,10 @@ def verify_page1(enc_key, page1):
     return hm.digest() == page1[PAGE_SZ - HMAC_SZ: PAGE_SZ]
 
 
-def decrypt_database(db_path, out_path, enc_key):
+def decrypt_database(db_path, out_path, enc_key, progress=None):
     """解密单个库：校验源库完整性，写临时文件成功后原子替换。
 
+    progress(frac)：按页上报 0-1 进度（大库解密可能持续较久）。
     返回 False 表示源库不完整（正在写入/被截断）或第 1 页校验失败。
     """
     file_size = os.path.getsize(db_path)
@@ -57,6 +60,8 @@ def decrypt_database(db_path, out_path, enc_key):
         return False
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     tmp = out_path + '.tmp'
+    if progress:
+        progress(0.0)
     try:
         with open(db_path, 'rb') as fin, open(tmp, 'wb') as fout:
             for pgno in range(1, total_pages + 1):
@@ -64,11 +69,18 @@ def decrypt_database(db_path, out_path, enc_key):
                 if len(page) != PAGE_SZ:
                     return False  # 读取过程中源库被截断
                 fout.write(decrypt_page(enc_key, page, pgno))
+                # 每 512 页（2MB）上报一次，避免频繁回调拖慢解密
+                if progress and pgno % 512 == 0:
+                    progress(pgno / total_pages)
         with open(tmp, 'rb') as f:
             if f.read(16) != b'SQLite format 3\x00':
                 return False
         os.replace(tmp, out_path)
+        if progress:
+            progress(1.0)
         return True
+    except JobCancelled:
+        raise
     except Exception:
         return False
     finally:
@@ -109,15 +121,34 @@ def decrypt_all(db_dir, out_dir, keys, progress=None, skip_fresh=True,
     """keys: {rel: {enc_key, salt}} -> {ok, failed, total, results}
 
     only_rels 非空时只解密指定相对路径的数据库。
+    progress(pct, message)：按字节权重上报总进度；单个大库解密期间也会持续更新。
     """
+    def report(pct, msg=''):
+        if progress:
+            progress(int(max(0, min(100, pct))), msg)
+
     results = []
     items = sorted(keys.items())
     if only_rels is not None:
         wanted = set(only_rels)
         items = [(rel, info) for rel, info in items if rel in wanted]
     total = len(items)
+    if not total:
+        return {'ok': 0, 'failed': 0, 'skipped': 0, 'total': 0, 'results': []}
+
+    # 按源库大小加权，避免大库处理时进度条长时间不动
+    weights = []
+    for rel, _info in items:
+        src = os.path.join(db_dir, rel.replace('/', os.sep))
+        try:
+            weights.append(max(1, os.path.getsize(src)))
+        except OSError:
+            weights.append(1)
+    total_bytes = sum(weights)
+    done_bytes = 0
     ok = failed = skipped = 0
-    for i, (rel, info) in enumerate(items, 1):
+
+    for idx, ((rel, info), weight) in enumerate(zip(items, weights)):
         src = os.path.join(db_dir, rel.replace('/', os.sep))
         dst = os.path.join(out_dir, rel.replace('/', os.sep))
         fresh = False
@@ -131,18 +162,29 @@ def decrypt_all(db_dir, out_dir, keys, progress=None, skip_fresh=True,
         if fresh:
             skipped += 1
             results.append({'rel': rel, 'status': 'skipped'})
+            report((done_bytes + weight) / total_bytes * 100, f'{rel} 已是最新，跳过')
         else:
+            report(done_bytes / total_bytes * 100,
+                   f'正在解密 {rel}（{idx + 1}/{total}）')
             try:
-                if decrypt_database(src, dst, bytes.fromhex(info['enc_key'])):
+                sub = (lambda frac, _rel=rel, _w=weight:
+                       report((done_bytes + _w * frac) / total_bytes * 100,
+                              f'正在解密 {_rel} {int(frac * 100)}%'))
+                if decrypt_database(src, dst, bytes.fromhex(info['enc_key']),
+                                    progress=sub):
                     ok += 1
                     results.append({'rel': rel, 'status': 'ok'})
                 else:
                     failed += 1
                     results.append({'rel': rel, 'status': 'hmac-failed'})
+            except JobCancelled:
+                raise
             except Exception as e:  # noqa: BLE001
                 failed += 1
                 results.append({'rel': rel, 'status': f'error: {e}'})
-        if progress:
-            progress(int(i / total * 100))
+        done_bytes += weight
+        report(done_bytes / total_bytes * 100,
+               f'已处理 {idx + 1}/{total} 个数据库')
+
     return {'ok': ok, 'failed': failed, 'skipped': skipped,
             'total': total, 'results': results}

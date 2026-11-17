@@ -59,6 +59,7 @@ const account = computed<any>(() => accounts.value.find((a) => a.folder === sele
 const jobs = reactive<Record<string, any>>({
   keys: { progress: 0, status: '', message: '', logs: [] },
   core: { progress: 0, status: '', message: '', logs: [] },
+  sessions: { progress: 0, status: '', message: '', logs: [] },
   prepare: { progress: 0, status: '', message: '', logs: [] },
   export: { progress: 0, status: '', message: '', logs: [] },
 })
@@ -85,7 +86,7 @@ function resetSelection() {
   sessionsLoaded.value = false
   sessions.value = []
   picked.value = []
-  preparedSig.value = ''
+  localPrepared.value = []
   exported.value = null
   previewShow.value = false
   previewSession.value = null
@@ -94,6 +95,7 @@ function resetSelection() {
   activeJob.value = ''
   jobs.keys = { progress: 0, status: '', message: '', logs: [] }
   jobs.core = { progress: 0, status: '', message: '', logs: [] }
+  jobs.sessions = { progress: 0, status: '', message: '', logs: [] }
   jobs.prepare = { progress: 0, status: '', message: '', logs: [] }
   jobs.export = { progress: 0, status: '', message: '', logs: [] }
 }
@@ -143,7 +145,12 @@ async function locateWechat() {
   }
 }
 
-async function runJob(kind: string, starter: () => Promise<any>) {
+async function runJob(
+  kind: string,
+  starter: () => Promise<any>,
+  onDone?: (done: any) => void,
+  opts: { boot?: boolean } = {},
+) {
   jobs[kind] = { progress: 0, status: 'running', message: '启动中…', logs: [] }
   activeJob.value = kind
   try {
@@ -156,7 +163,14 @@ async function runJob(kind: string, starter: () => Promise<any>) {
       message.warning('任务已取消')
       return null
     }
-    await loadBoot()
+    // 先更新本地状态，再刷新账号信息；bootstrap 在媒体很多时可能较慢，
+    // 不应阻塞“进入导出”等按钮的可用状态。
+    onDone?.(done)
+    if (opts.boot === false) {
+      loadBoot().catch(() => {})
+    } else {
+      await loadBoot()
+    }
     return done
   } catch (e: any) {
     jobs[kind] = { ...jobs[kind], status: 'error', message: e.message || String(e) }
@@ -213,21 +227,37 @@ async function ensureCore() {
   return done
 }
 
-const preparedSig = ref('')
-const pickedSig = computed(() => picked.value.slice().sort().join('|'))
+/** 本次运行中新准备好的会话（与后端落盘的 prepared_targets 合并） */
+const localPrepared = ref<string[]>([])
+const preparedTargets = computed(() => {
+  const set = new Set<string>(account.value?.prepared_targets || [])
+  localPrepared.value.forEach((u) => set.add(u))
+  return set
+})
 const prepared = computed(
-  () => picked.value.length > 0 && preparedSig.value === pickedSig.value,
+  () => picked.value.length > 0 && picked.value.every((u) => preparedTargets.value.has(u)),
 )
 
 function doPrepare() {
-  if (!account.value || !picked.value.length) return null
-  const sig = pickedSig.value
-  return runJob('prepare', () =>
-    api.prepare(account.value.folder, picked.value),
-  ).then((done) => {
-    if (done) preparedSig.value = sig
-    return done
-  })
+  if (!account.value) {
+    message.error('账号状态未就绪，请回到第 1 步重新扫描')
+    return null
+  }
+  if (!picked.value.length) {
+    message.warning('请先选择要准备的会话')
+    return null
+  }
+  return runJob(
+    'prepare',
+    () => api.prepare(account.value.folder, picked.value),
+    (done) => {
+      // 任务成功即视为已准备，不等待 bootstrap 刷新完成
+      if (done.status === 'done') {
+        const merged = new Set([...localPrepared.value, ...picked.value])
+        localPrepared.value = Array.from(merged)
+      }
+    },
+  )
 }
 
 /* ---------- 会话 ---------- */
@@ -250,16 +280,37 @@ const filtered = computed(() => {
 
 async function loadSessions() {
   if (!account.value || sessionsLoaded.value) return
+  const folder = account.value.folder
   sessionLoading.value = true
   try {
-    const r = await api.sessions(account.value.folder)
-    sessions.value = r.sessions
-    sessionsLoaded.value = true
+    // 后台任务解析会话并统计消息数，界面按任务进度显示进度条
+    const done = await runJob(
+      'sessions',
+      () => api.refreshSessions(folder),
+      (d) => {
+        const items = d?.result?.sessions
+        if (items) {
+          sessions.value = items
+          sessionsLoaded.value = true
+        }
+      },
+      { boot: false },
+    )
+    if (done && !sessionsLoaded.value) {
+      const r = await api.sessions(folder)
+      sessions.value = r.sessions
+      sessionsLoaded.value = true
+    }
   } catch (e: any) {
     message.error('读取会话失败：' + e.message)
   } finally {
     sessionLoading.value = false
   }
+}
+
+async function reloadSessions() {
+  sessionsLoaded.value = false
+  await loadSessions()
 }
 
 function togglePick(u: string) {
@@ -350,6 +401,14 @@ const exported = ref<any>(null)
 const exportMode = ref<'archive' | 'link'>('archive')
 
 async function doExport() {
+  if (!account.value) {
+    message.error('账号状态未就绪，请回到第 1 步重新扫描账号')
+    return
+  }
+  if (busy.value && jobs.export.status !== 'running') {
+    message.warning('有任务正在进行，请等待当前任务结束后再导出')
+    return
+  }
   if (!picked.value.length) {
     message.warning('请先选择要导出的会话')
     return
@@ -397,13 +456,46 @@ function canNext() {
   return false
 }
 
-async function next() {
+/** 当前步骤无法继续时，给出明确原因，而不是让按钮静默变灰 */
+function blockedReason() {
+  if (step.value === 1) return '请先选择一个微信账号'
   if (step.value === 2) {
-    if (!account.value?.messages_ready) {
-      const ok = await ensureCore()
-      if (!ok) return
-    }
-    if (!sessionsLoaded.value) await loadSessions()
+    if (!account.value?.has_keys) return '请先点击「提取密钥」读取数据库密钥'
+    if (!account.value?.core_ready) return '请先点击「建立会话索引」完成会话数据准备'
+    return ''
+  }
+  if (step.value === 3) return '请至少勾选一个要导出的会话'
+  if (step.value === 4) return '请先点击「开始准备」完成所选会话的数据准备'
+  return ''
+}
+
+const nextLoading = ref(false)
+
+async function ensureSessions() {
+  if (!account.value) return false
+  if (!account.value.messages_ready) {
+    const ok = await ensureCore()
+    if (!ok) return false
+  }
+  if (!sessionsLoaded.value) await loadSessions()
+  return sessionsLoaded.value
+}
+
+async function next() {
+  if (nextLoading.value) return
+  if (busy.value) {
+    message.warning('有任务正在进行，请等待完成后再继续')
+    return
+  }
+  if (!canNext()) {
+    message.warning(blockedReason() || '当前步骤尚未完成')
+    return
+  }
+  nextLoading.value = true
+  try {
+    if (step.value === 2 && !(await ensureSessions())) return
+  } finally {
+    nextLoading.value = false
   }
   step.value = Math.min(5, step.value + 1)
 }
@@ -420,8 +512,42 @@ const stepDefs = [
   { title: '导出', desc: '格式与时间范围' },
 ]
 
-function goStep(n: number) {
-  if (n < step.value) step.value = n
+/** 步骤条支持前进：前置条件不足时用提示说明原因，而不是毫无反应 */
+async function goStep(n: number) {
+  if (n === step.value) return
+  if (n < step.value) {
+    step.value = n
+    return
+  }
+  if (step.value === 1 && !selected.value) {
+    message.warning('请先选择一个微信账号')
+    return
+  }
+  if (n >= 3 && !(account.value?.has_keys && account.value?.core_ready)) {
+    message.warning(
+      account.value?.has_keys
+        ? '请先在第 2 步点击「建立会话索引」'
+        : '请先在第 2 步点击「提取密钥」',
+    )
+    return
+  }
+  if (n >= 3 && !sessionsLoaded.value) {
+    nextLoading.value = true
+    try {
+      if (!(await ensureSessions())) return
+    } finally {
+      nextLoading.value = false
+    }
+  }
+  if (n >= 4 && !picked.value.length) {
+    message.warning('请至少勾选一个要导出的会话')
+    return
+  }
+  if (n >= 5 && !prepared.value) {
+    message.warning('请先在第 4 步点击「开始准备」完成所选会话的数据准备')
+    return
+  }
+  step.value = n
 }
 
 onMounted(() => {
@@ -480,9 +606,9 @@ onMounted(() => {
                 :class="{
                   active: step === i + 1,
                   done: step > i + 1,
-                  clickable: i + 1 < step,
+                  clickable: i + 1 !== step,
                 }"
-                :title="i + 1 < step ? '返回这一步' : ''"
+                :title="i + 1 < step ? '返回这一步' : i + 1 > step ? '前往这一步' : ''"
                 @click="goStep(i + 1)"
               >
                 <div class="step-dot">
@@ -630,6 +756,37 @@ onMounted(() => {
               </div>
             </div>
 
+            <div
+              v-if="nextLoading && jobs.sessions.status === 'running'"
+              class="session-progress"
+            >
+              <div class="session-progress-head">
+                <span>正在解析会话列表</span>
+                <span style="display: flex; align-items: center; gap: 10px">
+                  <span class="pct">{{ jobs.sessions.progress || 0 }}%</span>
+                  <n-button
+                    size="tiny"
+                    tertiary
+                    type="error"
+                    @click="cancelJob('sessions')"
+                  >取消</n-button>
+                </span>
+              </div>
+              <n-progress
+                type="line"
+                :percentage="jobs.sessions.progress || 0"
+                :show-indicator="false"
+              />
+              <p class="hint">{{ jobs.sessions.message || '正在读取会话与消息数量…' }}</p>
+            </div>
+
+            <n-alert v-if="jobs.sessions.status === 'error'" type="error" style="margin-top: 16px">
+              <div class="prepared-done">
+                <span>会话列表加载失败：{{ jobs.sessions.message || '未知错误' }}</span>
+                <n-button size="small" @click="reloadSessions">重试</n-button>
+              </div>
+            </n-alert>
+
             <n-alert v-if="!boot?.weixin_running" type="warning" style="margin-top: 16px">
               当前没有检测到运行中的微信。密钥提取需要微信已登录。
             </n-alert>
@@ -641,7 +798,7 @@ onMounted(() => {
               <div>
                 <h2>选择会话</h2>
                 <p class="hint">
-                  已选 {{ picked.length }} 个 · 共 {{ sessions.length }} 个会话
+                  {{ sessionLoading ? '正在解析会话列表…' : `已选 ${picked.length} 个 · 共 ${sessions.length} 个会话` }}
                 </p>
               </div>
               <div class="actions">
@@ -667,6 +824,37 @@ onMounted(() => {
               </n-checkbox>
               <span class="hint">{{ filtered.length }} 个结果</span>
             </div>
+
+            <div
+              v-if="sessionLoading || jobs.sessions.status === 'running'"
+              class="session-progress"
+            >
+              <div class="session-progress-head">
+                <span>正在解析会话列表</span>
+                <span style="display: flex; align-items: center; gap: 10px">
+                  <span class="pct">{{ jobs.sessions.progress || 0 }}%</span>
+                  <n-button
+                    size="tiny"
+                    tertiary
+                    type="error"
+                    @click="cancelJob('sessions')"
+                  >取消</n-button>
+                </span>
+              </div>
+              <n-progress
+                type="line"
+                :percentage="jobs.sessions.progress || 0"
+                :show-indicator="false"
+              />
+              <p class="hint">{{ jobs.sessions.message || '正在读取会话与消息数量…' }}</p>
+            </div>
+
+            <n-alert v-if="jobs.sessions.status === 'error'" type="error" style="margin-bottom: 12px">
+              <div class="prepared-done">
+                <span>会话列表加载失败：{{ jobs.sessions.message || '未知错误' }}</span>
+                <n-button size="small" @click="reloadSessions">重试</n-button>
+              </div>
+            </n-alert>
 
             <n-spin :show="sessionLoading">
               <div class="sessions">
@@ -777,8 +965,36 @@ onMounted(() => {
               </div>
             </div>
 
+            <n-card
+              v-if="jobs.prepare.status === 'error' || jobs.prepare.status === 'cancelled'"
+              :title="jobs.prepare.status === 'cancelled' ? '准备已取消' : '准备失败'"
+              :bordered="false"
+              class="soft-card"
+              style="margin-top: 16px"
+            >
+              <p class="hint">{{ jobs.prepare.message || jobs.prepare.error || '未知错误' }}</p>
+              <div v-if="jobs.prepare.logs?.length" class="console" style="margin-top: 8px">
+                <div class="console-body">
+                  <div v-for="(l, i) in jobs.prepare.logs.slice(-8)" :key="i">{{ l }}</div>
+                </div>
+              </div>
+              <n-button size="small" type="primary" style="margin-top: 10px" @click="doPrepare">
+                重试准备
+              </n-button>
+            </n-card>
+
             <n-alert v-if="prepared" type="success" style="margin-top: 16px">
-              所选会话的数据已准备完成，可以进入导出。
+              <div class="prepared-done">
+                <span>所选会话的数据已准备完成，可以进入导出。</span>
+                <n-button size="small" type="primary" @click="step = 5">进入导出</n-button>
+              </div>
+            </n-alert>
+            <n-alert
+              v-else-if="!busy && jobs.prepare.status === 'done'"
+              type="warning"
+              style="margin-top: 16px"
+            >
+              本次准备未覆盖当前勾选的全部会话（可能刚刚更改了选择），请点击「开始准备」重新准备后再导出。
             </n-alert>
           </section>
 
@@ -787,9 +1003,22 @@ onMounted(() => {
             <div class="panel-head">
               <div>
                 <h2>导出</h2>
-                <p class="hint">已选 {{ picked.length }} 个会话 · 数据已准备完成</p>
+                <p class="hint">
+                  已选 {{ picked.length }} 个会话 · {{ prepared ? '数据已准备完成' : '数据尚未准备（导出时会按需处理媒体）' }}
+                </p>
               </div>
             </div>
+
+            <n-alert
+              v-if="!prepared"
+              type="warning"
+              style="margin-bottom: 12px"
+            >
+              <div class="prepared-done">
+                <span>当前所选会话还没有执行「准备数据」，图片/语音/视频可能缺失或导出较慢。</span>
+                <n-button size="small" secondary @click="step = 4">返回准备</n-button>
+              </div>
+            </n-alert>
 
             <div class="export-grid">
               <n-card title="导出格式" :bordered="false" class="soft-card">
@@ -854,6 +1083,9 @@ onMounted(() => {
                 <template #icon><n-icon><DownloadOutline /></n-icon></template>
                 开始导出
               </n-button>
+              <span v-if="busy && jobs.export.status !== 'running'" class="hint">
+                有任务正在进行，完成后即可导出
+              </span>
               <div v-if="jobs.export.status === 'running'" class="export-progress">
                 <n-progress
                   type="line"
@@ -912,7 +1144,19 @@ onMounted(() => {
             上一步
           </n-button>
           <span style="flex: 1" />
-          <n-button v-if="step < 5" type="primary" :disabled="!canNext()" :loading="jobs.core.status === 'running'" @click="next">
+          <span v-if="step < 5 && !canNext()" class="footer-hint">
+            {{ blockedReason() }}
+          </span>
+          <span v-else-if="step < 5 && nextLoading" class="footer-hint">
+            正在加载数据，请稍候…
+          </span>
+          <n-button
+            v-if="step < 5"
+            type="primary"
+            :disabled="!canNext() || nextLoading"
+            :loading="nextLoading || jobs.core.status === 'running'"
+            @click="next"
+          >
             下一步
             <template #icon><n-icon><ChevronForwardOutline /></n-icon></template>
           </n-button>
@@ -1351,6 +1595,29 @@ html.dark .prep-icon {
   white-space: pre-wrap;
 }
 
+.session-progress {
+  margin: 14px 0 16px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(7, 193, 96, 0.06);
+}
+html.dark .session-progress {
+  background: rgba(74, 222, 128, 0.08);
+}
+.session-progress-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.session-progress-head .pct {
+  color: #07a04c;
+}
+html.dark .session-progress-head .pct {
+  color: #4ade80;
+}
+
 .sess-toolbar {
   display: flex;
   align-items: center;
@@ -1487,6 +1754,19 @@ html.dark .soft-card {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.footer-hint {
+  margin-right: 12px;
+  font-size: 12px;
+  opacity: 0.55;
+}
+.prepared-done {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .footer {

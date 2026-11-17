@@ -2,8 +2,11 @@
 """配置管理：所有路径集中在这里，避免散落硬编码"""
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
+
+from app.core import tools
 
 
 def _default_base_dir() -> Path:
@@ -44,6 +47,33 @@ DEFAULTS = {
 }
 
 
+def _resolve_export_dir(value: str) -> str:
+    """导出目录按相对路径解析，默认落在启动器（exe）同级的 exports/。
+
+    - 相对路径：相对程序目录
+    - 绝对路径且存在：保持用户选择
+    - 绝对路径但不存在（常见于从别的电脑复制过来的 config.json）：回退到默认目录
+    """
+    default = str(BASE_DIR / 'exports')
+    if not value:
+        return default
+    path = Path(value)
+    if not path.is_absolute():
+        return str(BASE_DIR / path)
+    if path.exists():
+        return str(path)
+    return default
+
+
+def _store_export_dir(value: str) -> str:
+    """位于程序目录内时以相对路径保存，整个文件夹拷贝到别的电脑后仍可使用。"""
+    try:
+        rel = Path(value).resolve().relative_to(BASE_DIR.resolve())
+        return rel.as_posix()
+    except (ValueError, OSError):
+        return value
+
+
 def load_config() -> dict:
     cfg = dict(DEFAULTS)
     if CONFIG_FILE.exists():
@@ -55,13 +85,24 @@ def load_config() -> dict:
                 CONFIG_FILE.replace(CONFIG_FILE.with_suffix('.json.bad'))
             except OSError:
                 pass
+    cfg['export_dir'] = _resolve_export_dir(cfg.get('export_dir', ''))
+
+    # 优先使用随包内置的 ffmpeg；配置里指向不存在的绝对路径时也回退到内置版本
+    bundled = tools.bundled_ffmpeg()
+    ffmpeg = cfg.get('ffmpeg') or 'ffmpeg'
+    if bundled and (ffmpeg in ('ffmpeg', 'ffmpeg.exe')
+                    or not (os.path.isfile(ffmpeg) or shutil.which(ffmpeg))):
+        cfg['ffmpeg'] = bundled
     return cfg
 
 
 def save_config(cfg: dict):
     """临时文件 + 原子替换，避免断电/并发写产生半截 JSON"""
+    data = dict(cfg)
+    if data.get('export_dir'):
+        data['export_dir'] = _store_export_dir(data['export_dir'])
     tmp = CONFIG_FILE.with_suffix('.json.tmp')
-    tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2),
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
                    encoding='utf-8')
     os.replace(tmp, CONFIG_FILE)
 

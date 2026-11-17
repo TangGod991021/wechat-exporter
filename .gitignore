@@ -24,6 +24,7 @@ config.json
 dist/
 build/
 dist_runtime_backup/
+packaging/ffmpeg/
 
 # 编辑器
 .vscode/

@@ -5,7 +5,7 @@
 - Windows 10/11 x64
 - Python 3.11+
 - Node.js 18+
-- 可选：FFmpeg（图片 WxAM、视频转码）
+- FFmpeg（图片 WxAM、视频转码）：开发环境从 `PATH` 取用；打包时由 `build-portable.bat` 自动复制到 `packaging\ffmpeg\` 并随包分发，启动时注入 `PATH`
 
 ## 安装
 
@@ -65,9 +65,11 @@ npm run build
 ```
 
 `app.spec` 已把 `packaging/everything`、`packaging/licenses` 打进产物（`_internal/`），
-手动构建也会包含 Everything 与许可证。
+手动构建也会包含 Everything 与许可证。若 `packaging/ffmpeg/` 存在（`build-portable.bat`
+会从 PATH 自动复制 `ffmpeg.exe`、`ffprobe.exe`），也会一并打包到 `_internal/ffmpeg/`；
+`app/core/tools.py` 在启动时把该目录前置到 `PATH`。
 
-打包模式下 `app/config.py` 会把 `BASE_DIR` 定位到 exe 同级目录，因此 `config.json`、`data\`、`media\`、`exports\` 都随程序文件夹一起移动。**发布包不要携带 `config.json`**：它包含绝对路径与本机账号；`build-portable.bat` 会保留开发机 runtime 数据但删除产物中的 `config.json`。
+打包模式下 `app/config.py` 会把 `BASE_DIR` 定位到 exe 同级目录，因此 `config.json`、`data\`、`media\`、`exports\` 都随程序文件夹一起移动。**发布包不要携带 `config.json`**：它包含绝对路径与本机账号；`build-portable.bat` 会保留开发机 runtime 数据但删除产物中的 `config.json`。导出目录位于程序目录内时以相对路径（`exports`）保存，配置从别的电脑复制过来时不会写到旧机器的绝对路径。
 
 产物为 `dist\WeChatExporter\WeChatExporter.exe`。文件属性（描述、产品名、版本、版权）由 `packaging/version_info.txt` 提供；升级版本时需同时修改 `app/__init__.py` 与 `packaging/version_info.txt`。
 

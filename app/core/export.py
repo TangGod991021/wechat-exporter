@@ -125,12 +125,16 @@ class ChatStore:
             })
         return out
 
-    def table_map(self):
+    def table_map(self, progress=None):
         """建立一次「消息表名 -> 数据库路径」映射，避免逐会话反复打开所有库"""
         if self._table_map is not None:
             return self._table_map
         mapping = {}
-        for db in self.message_dbs:
+        total = max(1, len(self.message_dbs))
+        for i, db in enumerate(self.message_dbs, 1):
+            if progress:
+                progress(int((i - 1) / total * 100),
+                         f'正在读取消息库 {i}/{total}')
             try:
                 c = sqlite3.connect(db)
                 try:
@@ -144,6 +148,8 @@ class ChatStore:
             for (name,) in rows:
                 mapping[name] = db
         self._table_map = mapping
+        if progress:
+            progress(100, f'已读取 {total} 个消息库')
         return mapping
 
     def find_table(self, username):
@@ -160,6 +166,89 @@ class ChatStore:
             return c.execute(f'select count(*) from "{table}"').fetchone()[0]
         finally:
             c.close()
+
+    def table_counts(self, progress=None):
+        """一次连接统计每个消息表的行数，并按库文件 mtime/size 缓存。
+
+        旧实现为每个会话单独开连接执行 count(*)，会话多时首屏很慢；
+        这里改为每个消息库只开一次连接，结果落盘缓存，重复进入会话页近乎瞬时。
+        progress(pct, message) 用于向界面汇报进度。
+        """
+        def report(pct, msg=''):
+            if progress:
+                progress(int(max(0, min(100, pct))), msg)
+
+        mapping = self.table_map(
+            progress=(lambda p, m='': report(p * 0.15, m)) if progress else None)
+        if not mapping:
+            report(100, '没有找到消息表')
+            return {}
+        sig = {}
+        for db in set(mapping.values()):
+            try:
+                st = os.stat(db)
+                sig[os.path.basename(db)] = [st.st_mtime, st.st_size]
+            except OSError:
+                continue
+        cache_path = os.path.join(self.data_dir, 'session_counts.json')
+        if os.path.exists(cache_path):
+            try:
+                cached = json.load(open(cache_path, encoding='utf-8'))
+                if cached.get('sig') == sig:
+                    report(100, '会话数量已缓存')
+                    return cached.get('counts') or {}
+            except (OSError, ValueError):
+                pass
+
+        by_db = {}
+        for name, db in mapping.items():
+            by_db.setdefault(db, []).append(name)
+        total_tables = sum(len(v) for v in by_db.values()) or 1
+        counts = {}
+        done = 0
+        for db, names in by_db.items():
+            try:
+                c = sqlite3.connect(db)
+                try:
+                    for name in names:
+                        try:
+                            counts[name] = c.execute(
+                                f'select count(*) from "{name}"').fetchone()[0]
+                        except sqlite3.Error:
+                            counts[name] = 0
+                        done += 1
+                        report(15 + done / total_tables * 85,
+                               f'正在统计会话消息数 {done}/{total_tables}')
+                finally:
+                    c.close()
+            except sqlite3.DatabaseError:
+                continue
+        try:
+            os.makedirs(self.data_dir, exist_ok=True)
+            tmp = cache_path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as fh:
+                json.dump({'sig': sig, 'counts': counts}, fh)
+            os.replace(tmp, cache_path)
+        except OSError:
+            pass
+        return counts
+
+    def sessions_with_counts(self, progress=None):
+        def report(pct, msg=''):
+            if progress:
+                progress(int(max(0, min(100, pct))), msg)
+
+        report(1, '正在读取会话与联系人...')
+        items = self.sessions()
+        report(3, f'找到 {len(items)} 个会话，正在统计消息数...')
+        counts = self.table_counts(
+            progress=(lambda p, m='': report(3 + p * 0.97, m))
+            if progress else None)
+        for it in items:
+            table = f"Msg_{hashlib.md5(it['username'].encode()).hexdigest()}"
+            it['count'] = counts.get(table, 0)
+        report(100, f'会话列表加载完成（{len(items)} 个会话）')
+        return items
 
     # ---------- 媒体 ----------
     def image_index(self):

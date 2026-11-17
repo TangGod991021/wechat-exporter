@@ -16,7 +16,8 @@ app.exe（pywebview 原生窗口）
        ├─ /api/prepare          按所选会话准备媒体（后台任务）
        ├─ /api/decrypt          解密数据库（后台任务）
        ├─ /api/media            图片 / 语音 / 视频（后台任务）
-       ├─ /api/sessions         会话列表
+       ├─ /api/sessions         会话列表（读取缓存，快速返回）
+       ├─ /api/sessions/refresh 解析会话列表（后台任务，带进度）
        ├─ /api/chat             消息预览
        ├─ /api/export           导出（后台任务）
        ├─ /api/jobs/{id}        任务进度
@@ -41,6 +42,7 @@ app.exe（pywebview 原生窗口）
 | `app/core/message_parser.py` | 富消息 XML 解析 |
 | `app/core/export.py` | 会话解析、HTML 渲染、归档导出 |
 | `app/core/jobs.py` | 后台任务与进度；同类型任务互斥、进度回调处检查取消 |
+| `app/core/tools.py` | 内置 FFmpeg/ffprobe 定位；启动时把工具目录前置到 `PATH` |
 
 启动流程要点：
 
@@ -51,6 +53,13 @@ app.exe（pywebview 原生窗口）
 - 配置写入使用临时文件 + `os.replace`；损坏的 `config.json` 会改名为 `.json.bad`
 - 程序目录不可写（如 Program Files）时，配置与数据目录回退到 `%LOCALAPPDATA%\WeChatExporter`
 - 后台任务失败会追加到 `运行日志.log`（当前配置目录）
+
+进度与状态约定：
+
+- 长任务统一通过 `Job.update(pct, message)` 上报；密钥扫描按已读内存 MB、数据库解密按源库字节加权与页数上报，避免大库/大内存时进度长时间不动
+- `/api/sessions/refresh` 是后台任务：读取消息库、逐表 `count(*)` 时上报进度，前端显示进度条；结果写入 `data/<账号>/session_counts.json` 缓存
+- `data/<账号>/prepared.json` 记录第 4 步已准备的会话列表；`/api/bootstrap` 以 `prepared_targets` 返回，前端据此恢复「已准备」状态（刷新/重启后仍可导出）
+- `data/<账号>/session_counts.json` 按消息库 mtime/size 缓存各会话消息数，避免每次进入会话页都全量 `count(*)`
 
 ## 3. 微信 4.x 数据结构要点
 

@@ -58,6 +58,11 @@ export const api = {
     }),
   sessions: (account: string) =>
     request('/api/sessions?account=' + encodeURIComponent(account)),
+  refreshSessions: (account: string) =>
+    request('/api/sessions/refresh', {
+      method: 'POST',
+      body: JSON.stringify({ account }),
+    }),
   chat: (
     account: string,
     username: string,

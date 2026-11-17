@@ -153,6 +153,7 @@ MESSAGES = [
 
 JOB_POLLS = {'n': 0}
 PREP_POLLS = {'n': 0}
+SESS_POLLS = {'n': 0}
 
 
 def mock_png() -> bytes:
@@ -189,6 +190,9 @@ def handle_api(route, request):
         return json_response(route, BOOTSTRAP)
     if path.endswith('/api/sessions'):
         return json_response(route, {'sessions': SESSIONS})
+    if path.endswith('/api/sessions/refresh'):
+        SESS_POLLS['n'] = 0
+        return json_response(route, {'job': 'demo-sessions'})
     if path.endswith('/api/chat'):
         return json_response(route, {'messages': MESSAGES})
     if path.endswith('/api/core'):
@@ -201,6 +205,17 @@ def handle_api(route, request):
         return json_response(route, {'job': 'demo-export'})
     if '/api/jobs/' in path:
         jid = path.rsplit('/', 1)[-1]
+        if jid == 'demo-sessions':
+            SESS_POLLS['n'] += 1
+            if SESS_POLLS['n'] < 3:
+                return json_response(route, {
+                    'status': 'running', 'progress': 20 + SESS_POLLS['n'] * 25,
+                    'message': f'正在统计会话消息数 {SESS_POLLS["n"] * 40}/120',
+                    'logs': ['正在读取消息库 1/1']})
+            return json_response(route, {
+                'status': 'done', 'progress': 100,
+                'message': '会话列表加载完成（8 个会话）', 'logs': [],
+                'result': {'sessions': SESSIONS}})
         if jid == 'demo-prepare':
             PREP_POLLS['n'] += 1
             if PREP_POLLS['n'] < 8:

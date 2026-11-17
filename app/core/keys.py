@@ -155,7 +155,7 @@ def _xor_repeat(data, mask):
     return bytes(v ^ mask[i % len(mask)] for i, v in enumerate(data))
 
 
-def _iter_chunks(regions, read, chunk=CHUNK, overlap=0):
+def _iter_chunks(regions, read, chunk=CHUNK, overlap=0, on_read=None):
     for base, size in regions:
         off = 0
         tail = b''
@@ -163,6 +163,8 @@ def _iter_chunks(regions, read, chunk=CHUNK, overlap=0):
         while off < size:
             take = min(chunk, size - off)
             data = read(base + off, take) or b''
+            if on_read:
+                on_read(take)
             data_base = tail_base if tail else base + off
             merged = tail + data
             if merged:
@@ -179,18 +181,46 @@ def _iter_chunks(regions, read, chunk=CHUNK, overlap=0):
             off += take
 
 
-def config_cipher_scan(pid):
+def _progress_writer(progress, start, end):
+    """把 0-1 的扫描比例映射到 [start, end] 区间；按 MB 节流避免刷屏。"""
+    if not progress:
+        return lambda frac, msg='': None
+    state = {'last': -1.0}
+
+    def report(frac, msg=''):
+        frac = max(0.0, min(1.0, frac))
+        if frac - state['last'] < 0.01 and frac < 1.0:
+            return
+        state['last'] = frac
+        progress(int(start + (end - start) * frac), msg)
+
+    return report
+
+
+def config_cipher_scan(pid, progress=None):
+    """4.1.11+ Config.Cipher 扫描；progress 为 (0-100, message) 回调"""
+    report = _progress_writer(progress, 0, 100)
     handle = kernel32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
     if not handle:
         return {}, {'error': 'open-process-failed'}
     try:
         regions = enumerate_regions(handle)
+        total = sum(s for _b, s in regions) or 1
+        read_done = {'n': 0}
+
+        def on_read(n):
+            read_done['n'] += n
+            report(read_done['n'] / total * 0.6,
+                   f'扫描微信内存 {read_done["n"] / 1048576:.0f}/'
+                   f'{total / 1048576:.0f} MB（策略1）')
 
         def read(addr, size):
             return read_mem(handle, addr, size)
 
         needle_addrs = set()
-        for base, data in _iter_chunks(regions, read, overlap=len(CONFIG_NEEDLE) - 1):
+        for base, data in _iter_chunks(regions, read,
+                                       overlap=len(CONFIG_NEEDLE) - 1,
+                                       on_read=on_read):
             pos = data.find(CONFIG_NEEDLE)
             while pos >= 0:
                 needle_addrs.add(base + pos)
@@ -198,12 +228,23 @@ def config_cipher_scan(pid):
 
         stats = {'needle': len(needle_addrs), 'nodes': 0, 'blobs': 0, 'candidates': 0}
         if not needle_addrs:
+            report(1.0, '策略1 未命中，准备尝试明文缓存（策略2）')
             return {}, stats
 
+        report(0.6, f'找到 {len(needle_addrs)} 个候选对象，正在解析配置…')
         pairs = [struct.pack('<Q', a) + struct.pack('<Q', len(CONFIG_NEEDLE))
                  for a in needle_addrs]
         found = {}
-        for base, data in _iter_chunks(regions, read, overlap=0x80):
+        done2 = {'n': 0}
+
+        def on_read2(n):
+            done2['n'] += n
+            report(0.6 + done2['n'] / total * 0.4,
+                   f'解析密钥候选 {done2["n"] / 1048576:.0f}/'
+                   f'{total / 1048576:.0f} MB')
+
+        for base, data in _iter_chunks(regions, read, overlap=0x80,
+                                       on_read=on_read2):
             for pat in pairs:
                 pos = data.find(pat)
                 while pos >= 0:
@@ -230,13 +271,15 @@ def config_cipher_scan(pid):
                                                 found[run[64:96]] = run[:64]
                     pos = data.find(pat, pos + 1)
         stats['matched'] = len(found)
+        report(1.0, f'策略1 完成，匹配 {len(found)} 个密钥')
         return found, stats
     finally:
         kernel32.CloseHandle(handle)
 
 
 def plaintext_scan(pid, dbs, progress=None):
-    """4.0 路径：扫描明文 x'<hex>'，并用 HMAC 验证"""
+    """4.0 路径：扫描明文 x'<hex>'，并用 HMAC 验证；progress 为 (0-100, message)"""
+    report = _progress_writer(progress, 0, 100)
     handle = kernel32.OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_INFORMATION, False, pid)
     if not handle:
         return {}, {'error': 'open-process-failed'}
@@ -282,11 +325,13 @@ def plaintext_scan(pid, dbs, progress=None):
                                 found[salt] = enc
                                 pending.discard(salt)
                 done += take
-                if progress:
-                    progress(min(99, int(done / total * 100)))
+                report(min(1.0, done / total),
+                       f'扫描微信内存 {done / 1048576:.0f}/'
+                       f'{total / 1048576:.0f} MB（策略2）')
                 if take < 8 * 1024 * 1024:
                     break
                 off += take - overlap
+        report(1.0, f'策略2 完成，匹配 {len(found)} 个密钥')
         return found, {'seconds': round(time.time() - t0, 1), 'matched': len(found)}
     finally:
         kernel32.CloseHandle(handle)
@@ -296,19 +341,32 @@ def extract_keys(db_dir, progress=None):
     """返回 (keys_by_rel, meta)
 
     keys_by_rel: {rel_path: {'enc_key': hex, 'salt': hex}}
+    progress: (0-100, message) 回调；扫描大内存时持续上报，避免界面长时间无响应
     """
+    def report(pct, msg=''):
+        if progress:
+            progress(int(max(0, min(100, pct))), msg)
+
+    report(0, '正在收集数据库文件...')
     dbs = collect_dbs(db_dir)
     if not dbs:
         return {}, {'error': 'no-db', 'message': '没有找到 .db 文件'}
+    report(2, f'共 {len(dbs)} 个数据库，正在查找微信进程...')
     pids = find_pids()
     if not pids:
         return {}, {'error': 'weixin-not-running',
                     'message': '微信未运行，请先打开并登录微信'}
 
-    # 策略 1：4.1.11+ Config.Cipher
+    # 策略 1：4.1.11+ Config.Cipher（占总进度 0-60%）
     saw_permission_error = False
+    n = len(pids)
     for i, (pid, _threads) in enumerate(pids):
-        found, stats = config_cipher_scan(pid)
+        base = 60 * i / n
+        span = 60 / n
+        report(base, f'策略1：扫描微信进程 {i + 1}/{n}（PID {pid}）...')
+        found, stats = config_cipher_scan(
+            pid, progress=lambda p, m='', _b=base, _s=span: report(
+                _b + _s * p / 100, m))
         if stats.get('error') == 'open-process-failed':
             saw_permission_error = True
         if found:
@@ -316,21 +374,28 @@ def extract_keys(db_dir, progress=None):
                     for d in dbs if d['salt'] in found}
             if keys:
                 missing = [d['rel'] for d in dbs if d['salt'] not in found]
+                report(100, f'策略1 命中 {len(keys)} 个密钥')
                 return keys, {'mode': 'config-cipher', 'pid': pid,
                               'stats': stats, 'missing': missing}
-        if progress:
-            progress(int((i + 1) / len(pids) * 50))
+        report(base + span, f'进程 {i + 1}/{n} 未命中，继续')
+    if saw_permission_error:
+        report(60, '读取进程内存被拒绝，尝试以其它进程继续...')
 
-    # 策略 2：4.0 明文缓存
-    sub_progress = (lambda p, _p=progress: _p(50 + int(p * 0.5))) \
-        if progress else None
-    for pid, _threads in pids:
-        found, stats = plaintext_scan(pid, dbs, sub_progress)
+    # 策略 2：4.0 明文缓存（占总进度 60-100%）
+    for i, (pid, _threads) in enumerate(pids):
+        base = 60 + 40 * i / n
+        span = 40 / n
+        report(base, f'策略2：扫描微信进程 {i + 1}/{n}（PID {pid}）...')
+        found, stats = plaintext_scan(
+            pid, dbs,
+            progress=lambda p, m='', _b=base, _s=span: report(
+                _b + _s * p / 100, m))
         if found:
             keys = {d['rel']: {'enc_key': found[d['salt']], 'salt': d['salt']}
                     for d in dbs if d['salt'] in found}
             if keys:
                 missing = [d['rel'] for d in dbs if d['salt'] not in found]
+                report(100, f'策略2 命中 {len(keys)} 个密钥')
                 return keys, {'mode': 'plaintext', 'pid': pid,
                               'stats': stats, 'missing': missing}
 

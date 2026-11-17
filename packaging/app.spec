@@ -22,6 +22,11 @@ datas += [(os.path.join(ROOT, 'webui', 'dist'), os.path.join('webui', 'dist')),
           (os.path.join(ROOT, 'packaging', 'everything'), 'everything'),
           (os.path.join(ROOT, 'packaging', 'licenses'), 'licenses')]
 
+# 内置 FFmpeg（构建脚本会把 ffmpeg.exe / ffprobe.exe 放入 packaging/ffmpeg）
+ffmpeg_dir = os.path.join(ROOT, 'packaging', 'ffmpeg')
+if os.path.isdir(ffmpeg_dir):
+    datas += [(ffmpeg_dir, 'ffmpeg')]
+
 a = Analysis(
     [os.path.join(ROOT, 'run.py')],
     pathex=[ROOT],

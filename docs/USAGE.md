@@ -6,13 +6,13 @@
 2. 双击 `WeChatExporter.exe`
 3. 首次运行会在 exe 同级目录生成 `config.json`、`data\`、`media\`、`exports\`
 
-要求：Windows 10/11 + WebView2 运行时（Win11 自带）。图片 / 视频处理需另外安装 FFmpeg 并加入 `PATH`。
+要求：Windows 10/11 + WebView2 运行时（Win11 自带）。FFmpeg 已内置在 `_internal\ffmpeg\`，启动时自动加入 `PATH`，无需另外安装；导出默认写入 exe 同级的 `exports\`。
 
 ## 1. 启动前准备
 
 1. 登录微信 4.x，并保持运行
 2. 确认微信数据目录存在（默认 `C:\Users\<用户>\Documents\xwechat_files`）
-3. 如需要处理图片 / 视频，请安装 FFmpeg 并加入 `PATH`
+3. 图片 / 视频处理所需的 FFmpeg 已随包提供，无需安装
 
 ## 2. 五步流程
 

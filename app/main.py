@@ -17,7 +17,7 @@ from pathlib import Path
 import uvicorn
 
 from app.api.routes import create_app
-from app.core import discovery
+from app.core import discovery, tools
 
 
 def _base_dir() -> Path:
@@ -123,6 +123,8 @@ def wait_server(port, token='', timeout=60) -> bool:
 
 def main():
     ensure_std_streams()
+    # 内置 FFmpeg/ffprobe：启动时前置到 PATH，子进程无需用户另行安装
+    tools.ensure_tools_on_path()
     try:
         _run()
     except Exception:

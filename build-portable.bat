@@ -14,11 +14,11 @@ echo.
 
 rem ---------- 1. Python virtual environment ----------
 if not exist "%PY%" (
-  echo [1/5] Creating virtual environment...
+  echo [1/6] Creating virtual environment...
   python -m venv .venv
   if errorlevel 1 goto :fail
 ) else (
-  echo [1/5] Python virtual environment found
+  echo [1/6] Python virtual environment found
 )
 
 echo       Installing / checking Python dependencies...
@@ -33,7 +33,7 @@ if errorlevel 1 (
 )
 
 rem ---------- 2. Build frontend ----------
-echo [2/5] Building frontend...
+echo [2/6] Building frontend...
 where npm >nul 2>nul
 if errorlevel 1 (
   if not exist "webui\dist\index.html" (
@@ -59,8 +59,30 @@ if errorlevel 1 (
   popd
 )
 
-rem ---------- 3. Backup runtime data, then clean ----------
-echo [3/5] Backing up runtime data and cleaning old output...
+rem ---------- 3. Bundle FFmpeg ----------
+echo [3/6] Preparing bundled FFmpeg...
+if exist "packaging\ffmpeg\ffmpeg.exe" (
+  echo       Bundled FFmpeg already staged
+) else (
+  set "FFSRC="
+  where ffmpeg > "%TEMP%\wce_ff.txt" 2>nul
+  for /f "delims=" %%P in ('type "%TEMP%\wce_ff.txt" 2^>nul') do if not defined FFSRC set "FFSRC=%%~dpP"
+  del "%TEMP%\wce_ff.txt" >nul 2>nul
+  if defined FFSRC (
+    echo       Bundling FFmpeg from "%FFSRC%"
+    if not exist "packaging\ffmpeg" mkdir "packaging\ffmpeg"
+    copy /Y "%FFSRC%ffmpeg.exe" "packaging\ffmpeg\" >nul
+    if exist "%FFSRC%ffprobe.exe" copy /Y "%FFSRC%ffprobe.exe" "packaging\ffmpeg\" >nul
+    if exist "%FFSRC%..\LICENSE" copy /Y "%FFSRC%..\LICENSE" "packaging\ffmpeg\LICENSE.txt" >nul
+    if exist "packaging\ffmpeg\LICENSE.txt" if not exist "packaging\licenses\GPLv3.txt" copy /Y "packaging\ffmpeg\LICENSE.txt" "packaging\licenses\GPLv3.txt" >nul
+  ) else (
+    echo [WARN] ffmpeg not found in PATH; the package will NOT include FFmpeg.
+    echo        Put ffmpeg.exe / ffprobe.exe into packaging\ffmpeg and rebuild.
+  )
+)
+
+rem ---------- 4. Backup runtime data, then clean ----------
+echo [4/6] Backing up runtime data and cleaning old output...
 set "BACKUP=%~dp0dist_runtime_backup"
 if exist "%BACKUP%" (
   echo [WARN] Keeping existing runtime backup: %BACKUP%
@@ -79,13 +101,13 @@ if exist dist (
   goto :fail
 )
 
-rem ---------- 4. PyInstaller ----------
-echo [4/5] Packaging (about 3-10 minutes)...
+rem ---------- 5. PyInstaller ----------
+echo [5/6] Packaging (about 3-10 minutes)...
 "%PY%" -m PyInstaller packaging\app.spec --noconfirm --clean
 if errorlevel 1 goto :fail
 
-rem ---------- 5. Extra files ----------
-echo [5/5] Copying usage and license files...
+rem ---------- 6. Extra files ----------
+echo [6/6] Copying usage and license files...
 for /d %%D in ("dist\*") do set "DIST=%%~fD"
 if not defined DIST goto :fail
 
@@ -118,7 +140,7 @@ echo.
 echo   Copy the whole folder above to another PC and
 echo   double-click the exe to run.
 echo   Target: Windows 10/11 with WebView2 runtime.
-echo   FFmpeg is optional (image / video processing).
+echo   FFmpeg is bundled in _internal\ffmpeg (auto-added to PATH at startup).
 echo ============================================
 echo.
 

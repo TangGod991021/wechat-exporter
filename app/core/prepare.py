@@ -6,9 +6,17 @@ from app.core.media import (default_workers, prepare_images, prepare_voices,
 
 
 def _sub_progress(progress, start, end):
+    """把子阶段进度映射到 [start, end]。
+
+    子阶段回调有两种约定：媒体函数用 0-1 的比例，视频转码用 0-100 的百分比；
+    这里统一归一化，避免进度条长时间停在阶段起点。
+    """
     def cb(p, m=''):
-        if progress:
-            progress(int(start + (end - start) * p / 100), m)
+        if not progress:
+            return
+        frac = p if p <= 1 else p / 100
+        frac = max(0.0, min(1.0, frac))
+        progress(int(start + (end - start) * frac), m)
     return cb
 
 
