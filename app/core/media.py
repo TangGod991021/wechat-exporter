@@ -172,6 +172,54 @@ def _image_batch_worker(args):
     return ok, fail, formats
 
 
+def _pick_content_frame(frames, limit=24):
+    """从 WXAM/HEVC 帧序列中挑选内容最丰富的一帧。
+
+    微信部分中间图是两帧 HEVC：第 0 帧为白帧，第 1 帧才是真实画面；
+    直接取首帧会得到全白图片。这里按灰度方差选帧，方差越大内容越多。
+    """
+    try:
+        from PIL import ImageStat
+    except Exception:
+        return None
+    best, best_var = None, -1.0
+    for i, frame in enumerate(frames):
+        if i >= limit:
+            break
+        try:
+            img = frame.to_image()
+            # 缩略后再算方差，避免 4K 图片 × 多帧时反复扫描全图像素
+            stat_img = img.convert('L')
+            stat_img.thumbnail((256, 256))
+            var = ImageStat.Stat(stat_img).var[0]
+        except Exception:
+            continue
+        if var > best_var:
+            best, best_var = img, var
+    return best
+
+
+def _image_is_blank(img):
+    """图片是否几乎全白/全黑（灰度方差接近 0）"""
+    try:
+        from PIL import ImageStat
+        gray = img.convert('L')
+        gray.thumbnail((64, 64))
+        return ImageStat.Stat(gray).var[0] < 1.0
+    except Exception:
+        return False
+
+
+def _is_blank_image(path):
+    """判断已生成的 JPG 是否几乎全白/全黑（用于重新转换旧版本的白图）"""
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return _image_is_blank(im)
+    except Exception:
+        return False
+
+
 def _wxam_batch_worker(batch, ffmpeg='ffmpeg'):
     """batch: [(hevc_path, jpg_path)]，优先 PyAV，失败回退 ffmpeg"""
     try:
@@ -189,10 +237,13 @@ def _wxam_batch_worker(batch, ffmpeg='ffmpeg'):
             pos = data.find(b'\x00\x00\x00\x01')
             if pos >= 0 and use_av:
                 container = av.open(io.BytesIO(data[pos:]), format='hevc')
-                frame = next(container.decode(video=0))
-                img = frame.to_image()
+                try:
+                    img = _pick_content_frame(container.decode(video=0))
+                finally:
+                    container.close()
+                if img is None:
+                    raise RuntimeError('HEVC 没有可解码的帧')
                 img.save(dst, 'JPEG', quality=92)
-                container.close()
                 done = True
         except Exception:
             done = False
@@ -208,9 +259,11 @@ def _wxam_batch_worker(batch, ffmpeg='ffmpeg'):
                 os.close(fd)
                 with open(tmp, 'wb') as f:
                     f.write(data[pos:])
+                # thumbnail 滤镜会从多帧中选最具代表性的一帧，避免首帧白图
                 r = proc.run(
                     [ffmpeg, '-y', '-v', 'error', '-f', 'hevc', '-i', tmp,
-                     '-frames:v', '1', '-q:v', '2', dst],
+                     '-vf', 'thumbnail=24', '-frames:v', '1',
+                     '-q:v', '2', dst],
                     capture_output=True, timeout=60)
                 os.remove(tmp)
                 done = r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0
@@ -303,8 +356,10 @@ def _plan_wxam(images_dir, only_md5s=None):
             src = os.path.join(dirpath, n)
             dst = os.path.splitext(src)[0] + '.jpg'
             if os.path.exists(dst) and os.path.getmtime(dst) >= os.path.getmtime(src):
-                skipped += 1
-                continue
+                # 旧版本取 HEVC 首帧，部分图片会得到全白图；检测到空白则重新转换
+                if not _is_blank_image(dst):
+                    skipped += 1
+                    continue
             pending.append((src, dst))
     return pending, skipped
 

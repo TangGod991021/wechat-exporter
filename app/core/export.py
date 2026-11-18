@@ -63,6 +63,7 @@ class ChatStore:
             sorted(glob.glob(os.path.join(msg_dir, 'biz_message_*.db')))
         self._names = None
         self._image_index = None
+        self._image_suffix = None
         self._video_index = None
         self._table_map = None
         self._hardlink_names = None
@@ -282,9 +283,12 @@ class ChatStore:
     # ---------- 媒体 ----------
     def image_index(self):
         if self._image_index is None:
-            self._image_index = {}
+            best = {}
+            self._image_suffix = {}
             if self.images_dir and os.path.isdir(self.images_dir):
-                rank = {'': 0, '_h': 1, '_t': 2}
+                # 优先 _h（高清原图）：微信 4.x 的部分中间图是 WXAM/HEVC，
+                # 首帧可能是白帧，直接转 JPG 会得到空白图片；_h 是完整原图。
+                rank = {'_h': 0, '': 1, '_t': 2}
                 for dirpath, _dirs, names in os.walk(self.images_dir):
                     for n in names:
                         stem, ext = os.path.splitext(n)
@@ -296,11 +300,19 @@ class ChatStore:
                                 suffix, base = s, stem[:-2]
                                 break
                         key = base.lower()
-                        cur = self._image_index.get(key)
+                        cur = best.get(key)
                         if cur is None or rank[suffix] < cur[0]:
-                            self._image_index[key] = (rank[suffix], os.path.join(dirpath, n))
-                self._image_index = {k: v[1] for k, v in self._image_index.items()}
+                            best[key] = (rank[suffix], suffix,
+                                         os.path.join(dirpath, n))
+            self._image_index = {k: v[2] for k, v in best.items()}
+            self._image_suffix = {k: v[1] for k, v in best.items()}
         return self._image_index
+
+    def _find_image_info(self, md5):
+        """返回 (路径, 质量后缀)；后缀为 _h / '' / _t，空串表示没有"""
+        key = (md5 or '').lower()
+        path = self.image_index().get(key)
+        return path, (self._image_suffix or {}).get(key, '') if path else ''
 
     def _find_image(self, md5):
         return self.image_index().get((md5 or '').lower())
