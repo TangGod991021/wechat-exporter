@@ -22,8 +22,9 @@ app.exe（pywebview 原生窗口）
        ├─ /api/export           导出（后台任务）
        ├─ /api/jobs/{id}        任务进度
        ├─ /api/jobs/{id}/cancel 请求取消任务
-       ├─ /api/open-path        用系统程序打开白名单目录
-       └─ /api/file             本地媒体文件（白名单）
+       ├─ /api/open-path        用系统程序打开白名单目录/附件
+       ├─ /api/file             本地媒体/附件文件（白名单）
+       └─ /api/sticker          按需下载并缓存表情
 ```
 
 前端（Vue 3 + Naive UI）通过 HTTP 调用本地服务，长任务通过轮询 `/api/jobs/{id}` 获取进度。
@@ -39,7 +40,12 @@ app.exe（pywebview 原生窗口）
 | `app/core/keys.py` | 密钥提取（两种策略） |
 | `app/core/decrypt.py` | SQLCipher 4 页面解密 |
 | `app/core/media.py` | 图片 / 语音 / 视频索引与转码 |
-| `app/core/message_parser.py` | 富消息 XML 解析 |
+| `app/core/message_parser.py` | 富消息 XML 解析（含表情、文件、转账、链接） |
+| `app/core/emoji.py` | 微信内置表情代码（`[微笑]` 等）→ Unicode 映射 |
+| `app/core/textutil.py` | 多轮 HTML 反转义与 URL 清洗（处理 `&amp;amp;`、`&lt;/url&gt;`） |
+| `app/core/links.py` | B 站短链检测/解析、搜索链接与状态缓存 |
+| `app/core/attachments.py` | 本地附件索引与按名称/大小/时间匹配 |
+| `app/core/stickers.py` | 表情 CDN 下载、缓存与域名白名单 |
 | `app/core/export.py` | 会话解析、HTML 渲染、归档导出 |
 | `app/core/jobs.py` | 后台任务与进度；同类型任务互斥、进度回调处检查取消 |
 | `app/core/tools.py` | 内置 FFmpeg/ffprobe 定位；启动时把工具目录前置到 `PATH` |

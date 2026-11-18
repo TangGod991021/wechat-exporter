@@ -4,6 +4,7 @@
 |---|---|
 | [USAGE.md](USAGE.md) | 安装、五步使用流程与常见问题 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 模块划分、数据流与关键设计 |
+| [MEDIA_AND_ATTACHMENTS.md](MEDIA_AND_ATTACHMENTS.md) | 表情、附件、转账、链接、语音的解析与获取 |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发环境、构建、测试与扩展指南 |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | 微信版本兼容性与密钥策略 |
 | [PRIVACY.md](PRIVACY.md) | 数据处理边界与隐私说明 |
