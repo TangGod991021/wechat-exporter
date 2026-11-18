@@ -45,18 +45,27 @@ def test_export_dir_portable():
         with mock.patch.object(cfgmod, 'BASE_DIR', base), \
                 mock.patch.object(cfgmod, 'CONFIG_FILE', path):
             cfg = dict(cfgmod.DEFAULTS)
+            assert cfg['export_dir'] == 'exports', cfg['export_dir']
             cfg['export_dir'] = str(out)
             cfgmod.save_config(cfg)
             raw = json.loads(path.read_text(encoding='utf-8'))
             assert raw['export_dir'] == 'exports', raw['export_dir']
             loaded = cfgmod.load_config()
             assert loaded['export_dir'] == str(out), loaded['export_dir']
+            assert cfgmod.export_dir_display(loaded['export_dir']) == 'exports'
+
+            # 配置里存的是程序目录内的绝对路径时，展示仍为相对路径
+            path.write_text(json.dumps({'export_dir': str(out)}), encoding='utf-8')
+            loaded = cfgmod.load_config()
+            assert loaded['export_dir'] == str(out), loaded['export_dir']
+            assert cfgmod.export_dir_display(loaded['export_dir']) == 'exports'
 
             # 绝对路径不存在（从别的电脑复制）→ 回退到启动器同级 exports/
             path.write_text(json.dumps({'export_dir': r'D:\not-here\exports'}),
                             encoding='utf-8')
             loaded = cfgmod.load_config()
             assert loaded['export_dir'] == str(base / 'exports'), loaded['export_dir']
+            assert cfgmod.export_dir_display(loaded['export_dir']) == 'exports'
     print('  ok  导出目录按相对程序目录保存与回退')
 
 

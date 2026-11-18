@@ -13,7 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import __version__
-from app.config import BASE_DIR, load_config, save_config, account_paths
+from app.config import (BASE_DIR, load_config, save_config, account_paths,
+                        export_dir_display)
 from app.core import discovery, keys, decrypt, media, prepare, tools
 from app.core.export import ChatStore, export_chats
 from app.core.jobs import JobManager, JobBusy
@@ -191,6 +192,7 @@ def create_app(token: str = ''):
             'weixin_running': discovery.weixin_running(),
             'accounts': accounts,
             'export_dir': c['export_dir'],
+            'export_dir_display': export_dir_display(c['export_dir']),
             'last_account': c.get('last_account', ''),
         }
 

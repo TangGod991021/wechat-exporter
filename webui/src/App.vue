@@ -1072,7 +1072,10 @@ onMounted(() => {
               </n-card>
 
               <n-card title="输出位置" :bordered="false" class="soft-card">
-                <div class="path-text">{{ boot?.export_dir }}</div>
+                <div class="path-text">{{ boot?.export_dir_display || boot?.export_dir }}</div>
+                <p class="hint" style="margin-top: 6px">
+                  相对程序目录，默认写入 exe 同级的 exports 文件夹
+                </p>
                 <n-button size="small" quaternary style="margin-top: 10px" @click="api.openFolder(boot?.export_dir)">
                   <template #icon><n-icon><OpenOutline /></n-icon></template>
                   打开文件夹

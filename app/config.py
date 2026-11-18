@@ -40,19 +40,36 @@ CONFIG_FILE = BASE_DIR / 'config.json'
 DEFAULTS = {
     'wechat_root': '',                       # 微信数据目录（含 wxid_xxx 文件夹）
     'data_dir': str(BASE_DIR / 'data'),      # 解密后的数据库
-    'export_dir': str(BASE_DIR / 'exports'), # 导出结果
+    'export_dir': 'exports',                 # 导出结果：相对 exe 目录（同级 exports/）
     'media_dir': str(BASE_DIR / 'media'),    # 图片 / 语音
     'ffmpeg': 'ffmpeg',
     'last_account': '',
 }
 
 
-def _resolve_export_dir(value: str) -> str:
-    """导出目录按相对路径解析，默认落在启动器（exe）同级的 exports/。
+def _rel_to_base(value: str) -> str:
+    """返回相对程序目录的 POSIX 路径；不在程序目录内时返回空串。"""
+    try:
+        path = Path(value)
+        if not path.is_absolute():
+            path = BASE_DIR / path
+        return path.resolve().relative_to(BASE_DIR.resolve()).as_posix()
+    except (ValueError, OSError):
+        return ''
 
-    - 相对路径：相对程序目录
-    - 绝对路径且存在：保持用户选择
-    - 绝对路径但不存在（常见于从别的电脑复制过来的 config.json）：回退到默认目录
+
+def export_dir_display(value: str) -> str:
+    """用于界面展示：程序目录内显示相对路径（如 exports），否则原样返回。"""
+    return _rel_to_base(value) or value
+
+
+def _resolve_export_dir(value: str) -> str:
+    """导出目录解析规则（默认相对 exe 目录的 exports/）。
+
+    - 相对路径：相对程序目录（配置中默认保存 `exports`，移动整个文件夹后仍有效）
+    - 程序目录内的绝对路径：也按相对路径解析
+    - 程序目录外的绝对路径且存在：保持用户选择
+    - 绝对路径不存在（从别的电脑复制过来的 config.json）：回退到默认目录
     """
     default = str(BASE_DIR / 'exports')
     if not value:
@@ -60,6 +77,9 @@ def _resolve_export_dir(value: str) -> str:
     path = Path(value)
     if not path.is_absolute():
         return str(BASE_DIR / path)
+    rel = _rel_to_base(path)
+    if rel:
+        return str(BASE_DIR / rel)
     if path.exists():
         return str(path)
     return default
@@ -67,11 +87,7 @@ def _resolve_export_dir(value: str) -> str:
 
 def _store_export_dir(value: str) -> str:
     """位于程序目录内时以相对路径保存，整个文件夹拷贝到别的电脑后仍可使用。"""
-    try:
-        rel = Path(value).resolve().relative_to(BASE_DIR.resolve())
-        return rel.as_posix()
-    except (ValueError, OSError):
-        return value
+    return _rel_to_base(value) or value
 
 
 def load_config() -> dict:
