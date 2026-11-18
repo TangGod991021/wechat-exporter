@@ -10,6 +10,19 @@ export function fileUrl(path: string) {
   return TOKEN ? base + '&token=' + encodeURIComponent(TOKEN) : base
 }
 
+/** 表情直链：未缓存时后端会按消息 CDN 地址下载并缓存 */
+export function stickerUrl(account: string, md5: string, url = '') {
+  let base =
+    '/api/sticker?account=' +
+    encodeURIComponent(account) +
+    '&md5=' +
+    encodeURIComponent(md5 || '') +
+    '&url=' +
+    encodeURIComponent(url || '')
+  if (TOKEN) base += '&token=' + encodeURIComponent(TOKEN)
+  return base
+}
+
 async function request(path: string, options: RequestInit = {}) {
   const res = await fetch(path, {
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
@@ -86,6 +99,10 @@ export const api = {
     request('/api/jobs/' + id + '/cancel', { method: 'POST' }),
   openFolder: (path: string) =>
     request('/api/open-folder', { method: 'POST', body: JSON.stringify({ path }) }),
+  openPath: (path: string) =>
+    request('/api/open-path', { method: 'POST', body: JSON.stringify({ path }) }),
+  openUrl: (url: string) =>
+    request('/api/open-url', { method: 'POST', body: JSON.stringify({ url }) }),
 }
 
 export async function waitJob(

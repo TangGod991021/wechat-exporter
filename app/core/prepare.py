@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """按所选会话准备媒体数据（五步流程的第 4 步）"""
+from app.core import stickers
 from app.core.export import collect_media_ids
 from app.core.media import (default_workers, prepare_images, prepare_voices,
                             prepare_video_playback, prepare_wxam)
@@ -36,6 +37,7 @@ def prepare_selected_media(store, targets, attach_dir, wxid, codes, ffmpeg,
         'images': len(ids['images']),
         'voices': len(ids['voices']),
         'videos': len(ids['videos']),
+        'stickers': len(ids.get('stickers') or {}),
     }
 
     index = {}
@@ -50,38 +52,55 @@ def prepare_selected_media(store, targets, attach_dir, wxid, codes, ffmpeg,
         try:
             stats['images'] = prepare_images(
                 attach_dir, store.images_dir, wxid, codes, workers=workers,
-                only_md5s=ids['images'], progress=_sub_progress(progress, 25, 50))
+                only_md5s=ids['images'], progress=_sub_progress(progress, 25, 48))
         except Exception as e:  # noqa: BLE001
             stats['images'] = {'error': str(e)}
         try:
             stats['wxam'] = prepare_wxam(
                 store.images_dir, workers=workers, only_md5s=ids['images'],
-                progress=_sub_progress(progress, 50, 62), ffmpeg=ffmpeg)
+                progress=_sub_progress(progress, 48, 60), ffmpeg=ffmpeg)
         except Exception as e:  # noqa: BLE001
             stats['wxam'] = {'error': str(e)}
     else:
         stats['images'] = {'total': 0, 'ok': 0, 'skipped': 0, 'failed': 0}
         stats['wxam'] = {'total': 0, 'ok': 0, 'skipped': 0, 'failed': 0}
-        progress(50, '所选会话没有图片')
+        progress(48, '所选会话没有图片')
+
+    # 表情：本地缓存是加密格式，按消息里的腾讯 CDN 地址下载并缓存
+    sticker_tasks = (ids.get('stickers') or {}).items()
+    if sticker_tasks:
+        progress(60, '正在下载表情...')
+        try:
+            stats['stickers'] = stickers.download_many(
+                [(md5, url) for md5, url in sticker_tasks],
+                store.sticker_dir, workers=workers,
+                progress=lambda done, total: progress(
+                    60 + int(done / max(total, 1) * 10),
+                    f'表情 {done}/{total}'))
+        except Exception as e:  # noqa: BLE001
+            stats['stickers'] = {'error': str(e)}
+    else:
+        stats['stickers'] = {'total': 0, 'ok': 0, 'skipped': 0, 'failed': 0}
+    progress(70, '表情处理完成')
 
     if ids['voices']:
         try:
             stats['voices'] = prepare_voices(
                 store.media_db, store.voices_dir, workers=workers,
                 only_messages=ids['voices'],
-                progress=_sub_progress(progress, 62, 84))
+                progress=_sub_progress(progress, 70, 86))
         except Exception as e:  # noqa: BLE001
             stats['voices'] = {'error': str(e)}
     else:
         stats['voices'] = {'total': 0, 'ok': 0, 'skipped': 0, 'failed': 0}
-        progress(84, '所选会话没有语音')
+        progress(86, '所选会话没有语音')
 
     video_index = {md5: src for md5, src in index.items() if md5 in ids['videos']}
     if video_index and store.video_playback_dir:
         stats['videos'] = prepare_video_playback(
             video_index, store.video_cache, store.video_playback_dir, ffmpeg,
             workers=workers, only_md5s=ids['videos'],
-            progress=_sub_progress(progress, 84, 100))
+            progress=_sub_progress(progress, 86, 100))
     else:
         stats['videos'] = {'selected': 0, 'hevc': 0, 'transcoded': 0,
                            'skipped': 0, 'failed': 0}

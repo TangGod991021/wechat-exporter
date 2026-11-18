@@ -10,12 +10,23 @@ import re
 import shutil
 import sqlite3
 from datetime import datetime
+from urllib.parse import quote
 
 import zstandard as zstd
 
+from app.core import links, stickers
+from app.core.attachments import FileIndex
+from app.core.emoji import convert as emoji_convert
 from app.core.message_parser import parse_content, split_local_type
+from app.core.textutil import clean_text, clean_url
 from app.core.media import (build_video_index, default_workers,
                             load_video_index, prepare_video_playback)
+
+# 本地媒体缺失时在聊天记录中展示的原因（与手机微信提示保持一致）
+MISSING_IMAGE = '（图片已过期或已被清理）'
+MISSING_IMAGE_THUMB = '（原图已过期或已被清理，显示缩略图）'
+MISSING_VOICE = '（语音已过期或已被清理）'
+MISSING_VIDEO = '（视频已过期或已被清理）'
 
 TYPE_NAMES = {
     1: 'text', 3: 'image', 34: 'voice', 42: 'card', 43: 'video',
@@ -42,7 +53,8 @@ class ChatStore:
 
     def __init__(self, data_dir, images_dir='', voices_dir='', my_wxid='',
                  video_roots=None, video_cache='', video_playback_dir='',
-                 ffmpeg='ffmpeg'):
+                 ffmpeg='ffmpeg', attach_dir='', file_dir='', sticker_dir='',
+                 hardlink_db=''):
         self.data_dir = data_dir
         self.images_dir = images_dir
         self.voices_dir = voices_dir
@@ -51,10 +63,14 @@ class ChatStore:
         self.video_cache = video_cache
         self.video_playback_dir = video_playback_dir
         self.ffmpeg = ffmpeg
+        self.attach_dir = attach_dir
+        self.file_dir = file_dir
+        self.sticker_dir = sticker_dir
         self.session_db = os.path.join(data_dir, 'session', 'session.db')
         self.contact_db = os.path.join(data_dir, 'contact', 'contact.db')
         self.media_db = os.path.join(data_dir, 'message', 'media_0.db')
-        self.hardlink_db = os.path.join(data_dir, 'hardlink', 'hardlink.db')
+        self.hardlink_db = hardlink_db or os.path.join(
+            data_dir, 'hardlink', 'hardlink.db')
         # 普通会话在 message_*.db；公众号（gh_*）在 biz_message_*.db。
         # 同一会话的消息表可能横跨多个分库（微信按时间/容量滚动写入），
         # 因此后续所有读取都要遍历全部命中的分库并合并。
@@ -67,6 +83,8 @@ class ChatStore:
         self._video_index = None
         self._table_map = None
         self._hardlink_names = None
+        self._file_index = None
+        self._link_status = None
 
     # ---------- 基础信息 ----------
     def contacts(self):
@@ -99,9 +117,9 @@ class ChatStore:
             pass
         if row:
             info['wxid'] = row[0] or self.my_wxid
-            info['nickname'] = row[1] or ''
+            info['nickname'] = emoji_convert(row[1] or '')
         if not info['nickname']:
-            name = self.contacts().get(self.my_wxid, '')
+            name = emoji_convert(self.contacts().get(self.my_wxid, ''))
             if name:
                 info['nickname'] = name
         return info
@@ -123,7 +141,7 @@ class ChatStore:
                 continue
             out.append({
                 'username': username,
-                'name': contacts.get(username, username),
+                'name': emoji_convert(contacts.get(username, username)),
                 'is_group': username.endswith('@chatroom'),
                 'last_time': int(ts),
                 'last_time_text': datetime.fromtimestamp(ts).strftime('%Y-%m-%d %H:%M') if ts else '',
@@ -403,6 +421,33 @@ class ChatStore:
         hits = glob.glob(os.path.join(self.voices_dir, safe, f'*_{local_id}.wav'))
         return hits[0] if hits else None
 
+    def file_index(self):
+        if self._file_index is None:
+            self._file_index = FileIndex(
+                self.file_dir, self.attach_dir, self.hardlink_db)
+        return self._file_index
+
+    def _find_attachment(self, name, size=0, ts=0):
+        if not name:
+            return None
+        return self.file_index().find(name, size=size, ts=ts)
+
+    def _sticker_media(self, md5, url=''):
+        """已下载的表情路径；未下载时为空（预览由 /api/sticker 按需拉取）"""
+        if not self.sticker_dir:
+            return ''
+        return stickers.find_cached(self.sticker_dir, md5, url)
+
+    def link_cache_path(self):
+        if not self.images_dir:
+            return ''
+        return os.path.join(os.path.dirname(self.images_dir), 'link_status.json')
+
+    def link_status(self):
+        if self._link_status is None:
+            self._link_status = links.load_cache(self.link_cache_path())
+        return self._link_status
+
     # ---------- 消息 ----------
     def messages(self, username, since=None, until=None, limit=None,
                  before_ts=None, before_id=None, before_sort=None):
@@ -502,7 +547,7 @@ class ChatStore:
         if sender == self.my_wxid:
             display = '我'
         elif sender:
-            display = contacts.get(sender, sender)
+            display = emoji_convert(contacts.get(sender, sender))
         else:
             display = '系统'
 
@@ -522,16 +567,61 @@ class ChatStore:
         video_md5 = ''
         image_md5 = ''
 
+        # 文件消息：XML 里只有文件名/大小，去本地 msg/file 与 attach/F 定位
+        if kind == 'file':
+            ent = self._find_attachment(
+                parsed.get('title'), parsed.get('size_bytes'), ctime)
+            parsed['file_path'] = ent.path if ent else ''
+            parsed['file_name'] = ent.name if ent else (parsed.get('title') or '')
+            parsed['file_missing'] = not bool(ent)
+        elif kind == 'sticker':
+            md5 = (parsed.get('md5') or '').lower()
+            parsed['sticker_md5'] = md5
+            media = self._sticker_media(md5, parsed.get('cdnurl', ''))
+            parsed['media'] = media
+        elif kind == 'video_share':
+            vurl = parsed.get('url') or ''
+            if links.is_bilibili_short(vurl):
+                parsed['search_url'] = links.search_url(parsed.get('title'))
+                links.apply_to_message(parsed, self.link_status())
+
         if kind == 'chat_history':
             for rec in parsed.get('records', []):
                 md5 = rec.get('md5') or rec.get('thumb_md5')
                 if rec.get('kind') == 'video':
                     rec['media'] = self._find_video(md5) or ''
                     rec['video_md5'] = md5 or ''
+                    if not rec['media']:
+                        rec['text'] = (rec.get('text') or '[视频]') + MISSING_VIDEO
                 elif rec.get('kind') == 'image':
                     stem = self.hardlink_stem(md5, 'image') or (md5 or '')
-                    rec['media'] = self._find_image(stem) or ''
+                    rec['media'], suffix = self._find_image_info(stem)
+                    rec['media'] = rec['media'] or ''
                     rec['image_md5'] = stem
+                    if not rec['media']:
+                        rec['text'] = (rec.get('text') or '[图片]') + MISSING_IMAGE
+                    elif suffix == '_t':
+                        rec['text'] = (rec.get('text') or '[图片]') + MISSING_IMAGE_THUMB
+                elif rec.get('kind') == 'voice':
+                    rec['media'] = ''
+                    rec['text'] = (rec.get('text') or '[语音]') + MISSING_VOICE
+                elif rec.get('kind') == 'file':
+                    ent = None
+                    if rec.get('md5'):
+                        ent = self.file_index().find_md5(
+                            rec['md5'], rec.get('size_bytes', 0), ctime)
+                    if not ent:
+                        ent = self._find_attachment(
+                            rec.get('title') or rec.get('text'),
+                            rec.get('size_bytes', 0), ctime)
+                    rec['file_path'] = ent.path if ent else ''
+                    rec['file_name'] = ent.name if ent else (rec.get('title') or '')
+                    rec['file_missing'] = not bool(ent)
+                    rec['media'] = ''
+                elif rec.get('kind') == 'sticker':
+                    smd5 = (rec.get('md5') or '').lower()
+                    rec['sticker_md5'] = smd5
+                    rec['media'] = self._sticker_media(smd5, rec.get('cdnurl', ''))
                 else:
                     rec['media'] = ''
 
@@ -548,13 +638,20 @@ class ChatStore:
                 m = re.search(r'md5="([0-9a-fA-F]{32})"', content)
                 md5 = m.group(1) if m else None
             image_md5 = (md5 or '').lower()
-            media = self._find_image(md5) or ''
+            media, suffix = self._find_image_info(md5)
+            media = media or ''
+            if not media:
+                text = (text or '[图片]') + MISSING_IMAGE
+            elif suffix == '_t':
+                text = (text or '[图片]') + MISSING_IMAGE_THUMB
         elif base == 34:
             m = re.search(r'voicelength="(\d+)"', content)
             secs = int(m.group(1)) / 1000 if m else 0
             # 语音按 username（wxid/@chatroom）分目录，不能用备注/昵称
             media = self._find_voice(chat, local_id) or ''
             text = f'[语音 {secs:.0f}s]' if secs else '[语音]'
+            if not media:
+                text += MISSING_VOICE
         elif base == 43:
             m = re.search(r'md5="([0-9a-fA-F]{32})"', content)
             md5 = m.group(1).lower() if m else None
@@ -572,7 +669,7 @@ class ChatStore:
                 if n >= 1024 * 1024:
                     text = f'[视频 {n / 1024 / 1024:.1f} MB]'
             if not media:
-                text = (text or '[视频]') + '（未缓存到本地）'
+                text = (text or '[视频]') + MISSING_VIDEO
 
         return {
             'local_id': local_id,
@@ -623,12 +720,33 @@ def _record_html(c, uri_fn=None):
         head = (f'<div class="ri-head"><span class="ri-sender">'
                 f'{html.escape(r.get("sender", ""))}</span>'
                 f'<span class="ri-time">{html.escape(r.get("time", ""))}</span></div>')
+        kind = r.get('kind')
         body = f'<div class="ri-text">{linkify(r.get("text", ""))}</div>'
+        if kind == 'link':
+            href = _safe_href(r.get('url'))
+            label = r.get('title') or r.get('text') or href
+            if href:
+                body = (f'<div class="ri-text"><a href="{html.escape(href)}" '
+                        f'target="_blank" rel="noopener noreferrer">'
+                        f'{html.escape(label)}</a></div>')
+            elif r.get('des'):
+                body = f'<div class="ri-text">{linkify(r.get("des", ""))}</div>'
         size = ''
-        if r.get('size') and r.get('kind') not in ('text', 'image', 'voice', 'sticker'):
+        if r.get('size') and kind not in ('text', 'image', 'voice', 'sticker'):
             size = f'<div class="ri-size">{html.escape(r["size"])}</div>'
         media_html = ''
-        if r.get('media'):
+        if kind == 'file':
+            if r.get('file_path'):
+                uri = uri_fn(r['file_path'])
+                name = html.escape(r.get('file_name') or r.get('title') or '附件')
+                if uri:
+                    media_html = (f'<a class="ri-file" href="{uri}" '
+                                  f'download="{name}">📎 {name}</a>')
+                else:
+                    media_html = '<span class="missing">[附件缺失]</span>'
+            else:
+                media_html = '<span class="missing">[附件未缓存到本地]</span>'
+        elif r.get('media'):
             uri = uri_fn(r['media'])
             low = r['media'].lower()
             if not uri:
@@ -638,8 +756,11 @@ def _record_html(c, uri_fn=None):
             elif low.endswith('.wav'):
                 media_html = f'<audio controls src="{uri}"></audio>'
             else:
-                media_html = (f'<img class="ri-img" src="{uri}" loading="lazy" '
+                cls = 'ri-sticker' if kind == 'sticker' else 'ri-img'
+                media_html = (f'<img class="{cls}" src="{uri}" loading="lazy" '
                               f'title="点击放大">')
+        elif kind == 'sticker':
+            media_html = '<span class="missing">[表情未下载]</span>'
         rows.append(f'<div class="record-item">{head}{body}{size}{media_html}</div>')
     title = html.escape(c.get('title') or '聊天记录')
     count = len(c.get('records', []))
@@ -649,7 +770,13 @@ def _record_html(c, uri_fn=None):
 
 
 def _default_uri(path):
-    return 'file:///' + path.replace('\\', '/').replace(' ', '%20')
+    # quote 会把空格、#、% 等对 file:/// 有特殊含义的字符正确转义
+    return 'file:///' + quote(path.replace('\\', '/'), safe='/:')
+
+
+def _rel_uri(path):
+    """归档模式的相对链接：按 URL 规则转义，保留中文与目录分隔符"""
+    return quote((path or '').replace('\\', '/'), safe='/:')
 
 
 def _rich_body(m, uri_fn=None):
@@ -661,21 +788,64 @@ def _rich_body(m, uri_fn=None):
         return _record_html(c, uri_fn)
     if kind == 'quote':
         q = c.get('quote') or {}
+        qurl = _safe_href(q.get('url'))
+        qtext = linkify(q.get('text', ''))
+        if qurl:
+            qtext = (f'<a href="{html.escape(qurl)}" target="_blank" '
+                     f'rel="noopener noreferrer">{qtext}</a>')
         return (
             f'<div class="quote"><div class="q-src">{html.escape(q.get("sender", ""))}</div>'
-            f'<div class="q-text">{linkify(q.get("text", ""))}</div></div>'
+            f'<div class="q-text">{qtext}</div></div>'
             f'<div class="reply">{linkify(c.get("reply") or m.get("text", ""))}</div>')
     if kind == 'link':
         href = _safe_href(c.get('url'))
-        title_html = (f'<a href="{html.escape(href)}" target="_blank" rel="noopener noreferrer">'
-                      f'{linkify(c.get("title") or href)}</a>') if href else linkify(c.get('title', ''))
-        des = f'<div class="card-des">{linkify(c.get("des", ""))}</div>' if c.get('des') else ''
+        title_text = c.get('title') or href or c.get('des') or m.get('text', '')
+        des = (f'<div class="card-des">{html.escape(c.get("des", ""))}</div>'
+               if c.get('des') else '')
         meta = f'<div class="card-meta">{html.escape(_domain(href))}</div>' if href else ''
-        return f'<div class="card"><div class="card-title">{title_html}</div>{des}{meta}</div>'
+        return (f'<div class="card"><div class="card-title">'
+                f'{linkify(title_text)}</div>{des}{meta}</div>')
+    if kind == 'sticker':
+        src = m.get('media') or c.get('media') or ''
+        uri = uri_fn(src) if src else ''
+        if uri:
+            return (f'<img class="sticker-img" src="{uri}" loading="lazy" '
+                    f'alt="表情" title="点击放大">')
+        return '<span class="sticker-missing">[表情未下载]</span>'
     if kind == 'file':
         meta = f'<div class="card-meta">{html.escape(c.get("size", ""))}</div>' if c.get('size') else ''
+        name = c.get('file_name') or c.get('title') or m.get('text', '')
+        path = c.get('file_path')
+        if path:
+            uri = uri_fn(path)
+            if uri:
+                return (f'<a class="card file-card" href="{uri}" '
+                        f'download="{html.escape(name)}">'
+                        f'<div class="card-title">📄 {html.escape(name)}</div>{meta}'
+                        f'<div class="card-meta file-open">点击打开 / 下载</div></a>')
         return (f'<div class="card"><div class="card-title">📄 '
-                f'{html.escape(c.get("title", m.get("text", "")))}</div>{meta}</div>')
+                f'{html.escape(name)}</div>{meta}'
+                f'<div class="card-meta missing">附件未缓存到本地</div></div>')
+    if kind == 'transfer':
+        amount = c.get('amount') or ''
+        memo = c.get('memo') or c.get('des') or ''
+        status = c.get('status') or ''
+        des = f'<div class="card-des">{linkify(memo)}</div>' if memo else ''
+        meta = (f'<div class="card-meta">{html.escape(status)}</div>'
+                if status else '')
+        return (f'<div class="card"><div class="card-title">💰 '
+                f'{html.escape(amount or c.get("title") or m.get("text", "转账"))}</div>'
+                f'{des}{meta}</div>')
+    if kind == 'redpacket':
+        memo = c.get('memo') or c.get('des') or ''
+        status = c.get('status') or ''
+        amount = c.get('amount') or ''
+        des = f'<div class="card-des">{linkify(memo)}</div>' if memo else ''
+        meta = (f'<div class="card-meta">{html.escape(status or amount)}</div>'
+                if (status or amount) else '')
+        return (f'<div class="card"><div class="card-title">🧧 '
+                f'{html.escape(c.get("title") or m.get("text", "红包"))}</div>'
+                f'{des}{meta}</div>')
     if kind == 'location':
         href = _safe_href(c.get('url'))
         title = html.escape(c.get('title') or m.get('text', ''))
@@ -718,8 +888,25 @@ box-shadow:0 1px 3px rgba(0,0,0,.06);white-space:pre-wrap;word-break:break-word;
 .me{{align-items:flex-end}} .me .bubble{{background:#95ec69}}
 .me .meta{{text-align:right}}
 img.chat-img{{max-width:320px;border-radius:8px;display:block;margin-top:4px}}
+img.sticker-img{{max-width:160px;max-height:160px;display:block;margin-top:2px;object-fit:contain}}
+img.ri-sticker{{max-width:120px;max-height:120px;margin-top:4px;display:block;object-fit:contain}}
 video.chat-video{{max-width:360px;border-radius:8px;display:block;margin-top:4px;background:#000}}
 audio{{max-width:260px;height:32px;margin-top:4px}}
+a.file-card{{text-decoration:none;color:inherit;display:block}}
+a.file-card:hover{{border-color:#07c160}}
+a.card-link{{text-decoration:none;color:inherit;display:block;transition:border-color .15s ease}}
+a.card-link:hover{{border-color:#07c160}}
+.file-open{{color:#07a04c}}
+a.ri-file{{display:inline-block;margin-top:4px;font-size:13px;padding:3px 8px;
+border:1px solid #e0e0e0;border-radius:6px;background:#fafafa}}
+.sticker-missing{{color:#999;font-size:12px}}
+.link-fallback{{margin-top:4px;font-size:12px}}
+.link-fallback a{{color:#07a04c}}
+.card-tools{{display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap}}
+.copy-title{{border:1px solid #e0e0e0;background:#fafafa;border-radius:6px;
+padding:2px 8px;font-size:12px;color:#555;cursor:pointer}}
+.copy-title:hover{{color:#07a04c;border-color:#07c160}}
+.card-meta.warn{{color:#c33}}
 .sys{{text-align:center;color:#999;font-size:12px;margin:8px 0}}
 a{{color:#576b95;text-decoration:none}}
 .quote{{background:#f5f5f5;border-left:3px solid #d0d0d0;border-radius:6px;
@@ -745,7 +932,7 @@ justify-content:space-between;align-items:center;gap:10px}}
 .ri-text{{font-size:13px;color:#333;word-break:break-word}}
 .ri-size{{font-size:12px;color:#aaa;margin-top:2px}}
 .ri-img{{max-width:220px;border-radius:6px;margin-top:4px;display:block}}
-img.chat-img,img.ri-img{{cursor:zoom-in}}
+img.chat-img,img.ri-img,img.sticker-img,img.ri-sticker{{cursor:zoom-in}}
 #lightbox{{position:fixed;inset:0;background:rgba(0,0,0,.85);display:none;
 align-items:center;justify-content:center;z-index:9999;padding:24px;cursor:zoom-out}}
 #lightbox.show{{display:flex}}
@@ -759,13 +946,16 @@ box-shadow:0 20px 60px rgba(0,0,0,.5);object-fit:contain;background:#fff}}
             continue
         cls = 'msg me' if m['sender'] == '我' else 'msg'
         body = _rich_body(m, uri_fn)
-        if m['media']:
+        # 表情在 _rich_body 内渲染，避免重复输出一张图
+        if m['media'] and kind != 'sticker':
             uri = uri_fn(m['media'])
             low = m['media'].lower()
             if not uri:
                 body += '<br><span class="missing">[媒体缺失]</span>'
             elif low.endswith('.wav'):
-                body += f'<br><audio controls src="{uri}"></audio>'
+                body += (f'<br><audio controls src="{uri}"></audio>'
+                         f'<div class="card-meta"><a href="{uri}" download>'
+                         f'下载语音</a></div>')
             elif low.endswith('.mp4'):
                 poster = uri_fn(m['poster']) if m.get('poster') else ''
                 poster_attr = f' poster="{poster}"' if poster else ''
@@ -784,7 +974,21 @@ box-shadow:0 20px 60px rgba(0,0,0,.5);object-fit:contain;background:#fff}}
   function close(){lb.classList.remove('show');big.removeAttribute('src');document.body.style.overflow='';}
   document.addEventListener('click',function(e){
     var t=e.target;
-    if(t&&t.tagName==='IMG'&&(t.classList.contains('chat-img')||t.classList.contains('ri-img'))){
+    var btn=t&&t.closest?t.closest('.copy-title'):null;
+    if(btn){
+      e.preventDefault();e.stopPropagation();
+      var text=btn.getAttribute('data-copy')||'';
+      function done(){btn.textContent='✅ 已复制';setTimeout(function(){btn.textContent='📋 复制标题';},1500);}
+      function fallback(){var ta=document.createElement('textarea');ta.value=text;
+        document.body.appendChild(ta);ta.select();
+        try{document.execCommand('copy');done();}catch(_){}
+        document.body.removeChild(ta);}
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(done).catch(fallback);
+      }else{fallback();}
+      return;
+    }
+    if(t&&t.tagName==='IMG'&&(t.classList.contains('chat-img')||t.classList.contains('ri-img')||t.classList.contains('sticker-img')||t.classList.contains('ri-sticker'))){
       big.src=t.currentSrc||t.src;lb.classList.add('show');document.body.style.overflow='hidden';
     }else if(e.target===lb||e.target===big){close();}
   });
@@ -848,28 +1052,36 @@ def _unique_dir(parent, name):
 
 
 def _collect_media(msgs, chat_dir, progress=None):
-    """把消息实际引用的媒体复制/硬链接到会话目录"""
+    """把消息实际引用的媒体与附件复制/硬链接到会话目录"""
     tasks = []
+
+    def add(path, ts, kind=''):
+        if path:
+            tasks.append((path, ts, kind))
+
     for m in msgs:
-        if m.get('media'):
-            tasks.append((m['media'], m.get('ts')))
-        if m.get('poster'):
-            tasks.append((m['poster'], m.get('ts')))
-        for r in (m.get('content') or {}).get('records', []):
-            if r.get('media'):
-                tasks.append((r['media'], m.get('ts')))
+        c = m.get('content') or {}
+        add(m.get('media'), m.get('ts'))
+        add(m.get('poster'), m.get('ts'))
+        add(c.get('file_path'), m.get('ts'), 'files')
+        for r in c.get('records') or []:
+            add(r.get('media'), m.get('ts'))
+            add(r.get('file_path'), m.get('ts'), 'files')
     media_map = {}
     missing = []
     counts = {'images': 0, 'videos': 0, 'audio': 0, 'files': 0}
     total = len(tasks)
-    for i, (src, ts) in enumerate(tasks, 1):
+    for i, (src, ts, kind_hint) in enumerate(tasks, 1):
         if not src or src in media_map:
             continue
         if not os.path.exists(src):
             missing.append(src)
             continue
-        kind = _media_kind_dir(src)
-        name = _media_name(src, ts, kind)
+        kind = kind_hint or _media_kind_dir(src)
+        if kind == 'files':
+            name = _file_export_name(src, ts)
+        else:
+            name = _media_name(src, ts, kind)
         dest_dir = os.path.join(chat_dir, kind)
         os.makedirs(dest_dir, exist_ok=True)
         dest = os.path.join(dest_dir, name)
@@ -899,18 +1111,80 @@ def _relativize(msgs, media_map):
         if m.get('poster') and m['poster'] in media_map:
             mm['poster'] = media_map[m['poster']]
         c = m.get('content')
-        if isinstance(c, dict) and c.get('records'):
+        if isinstance(c, dict):
             cc = dict(c)
-            recs = []
-            for r in c['records']:
-                rr = dict(r)
-                if r.get('media') and r['media'] in media_map:
-                    rr['media'] = media_map[r['media']]
-                recs.append(rr)
-            cc['records'] = recs
+            if c.get('file_path') and c['file_path'] in media_map:
+                cc['file_path'] = media_map[c['file_path']]
+            if c.get('records'):
+                recs = []
+                for r in c['records']:
+                    rr = dict(r)
+                    if r.get('media') and r['media'] in media_map:
+                        rr['media'] = media_map[r['media']]
+                    if r.get('file_path') and r['file_path'] in media_map:
+                        rr['file_path'] = media_map[r['file_path']]
+                    recs.append(rr)
+                cc['records'] = recs
             mm['content'] = cc
         out.append(mm)
     return out
+
+
+def _export_stickers(store, msgs, progress=None):
+    """导出前补齐表情：未准备数据直接导出时也能得到完整表情。
+
+    下载完成后把缓存路径回填到消息/转发记录，供 _collect_media 复制。
+    """
+    sticker_dir = getattr(store, 'sticker_dir', '')
+    if not sticker_dir:
+        return 0
+    tasks = []
+
+    def collect(c):
+        md5 = (c.get('md5') or c.get('sticker_md5') or '').lower()
+        url = c.get('cdnurl') or ''
+        if url:
+            tasks.append((md5, url))
+
+    for m in msgs:
+        c = m.get('content') or {}
+        if m.get('kind') == 'sticker' or c.get('kind') == 'sticker':
+            collect(c)
+        for r in c.get('records') or []:
+            if r.get('kind') == 'sticker':
+                collect(r)
+    if not tasks:
+        return 0
+    res = stickers.download_many(tasks, sticker_dir, progress=progress)
+
+    def attach(c):
+        md5 = (c.get('md5') or c.get('sticker_md5') or '').lower()
+        return stickers.find_cached(sticker_dir, md5, c.get('cdnurl', ''))
+
+    for m in msgs:
+        c = m.get('content') or {}
+        if (m.get('kind') == 'sticker' or c.get('kind') == 'sticker') and not m.get('media'):
+            m['media'] = attach(c)
+        for r in c.get('records') or []:
+            if r.get('kind') == 'sticker' and not r.get('media'):
+                r['media'] = attach(r)
+    return res.get('ok', 0)
+
+
+def _check_share_links(store, msgs, progress=None):
+    """导出前检测 B 站短链：有效则解析为直链，失效则标记以便改用标题搜索"""
+    cache_path = getattr(store, 'link_cache_path', lambda: '')()
+    if not cache_path:
+        return
+    urls = []
+    for m in msgs:
+        c = m.get('content') or {}
+        if c.get('kind') == 'video_share' and links.is_bilibili_short(c.get('url')):
+            urls.append(c.get('url'))
+    if not urls:
+        return
+    cache = links.check_urls(urls, cache_path, progress=progress)
+    links.apply_to_messages(msgs, cache)
 
 
 def _video_md5s(msgs):
@@ -926,9 +1200,18 @@ def _video_md5s(msgs):
 
 
 def collect_media_ids(store, targets, progress=None):
-    """解析所选会话，收集需要处理的图片 / 语音 / 视频标识。"""
+    """解析所选会话，收集需要处理的图片 / 语音 / 视频 / 表情标识。"""
     images, voices, videos = set(), set(), set()
+    sticker_urls = {}
+    link_tasks = {}
     total = max(1, len(targets))
+
+    def add_sticker(content):
+        md5 = (content.get('md5') or content.get('sticker_md5') or '').lower()
+        url = content.get('cdnurl') or ''
+        if url:
+            sticker_urls[md5 or url] = url
+
     for i, username in enumerate(targets, 1):
         for m in store.messages(username):
             if m.get('image_md5'):
@@ -937,7 +1220,13 @@ def collect_media_ids(store, targets, progress=None):
                 videos.add(m['video_md5'].lower())
             if m.get('type') == 'voice' or m.get('kind') == 'voice':
                 voices.add((username, m['local_id']))
-            for r in (m.get('content') or {}).get('records') or []:
+            c = m.get('content') or {}
+            if m.get('kind') == 'sticker' or c.get('kind') == 'sticker':
+                add_sticker(c)
+            if c.get('kind') == 'video_share' and \
+                    links.is_bilibili_short(c.get('url')):
+                link_tasks[c['url']] = c.get('title') or ''
+            for r in c.get('records') or []:
                 if r.get('kind') == 'image':
                     for key in ('md5', 'thumb_md5', 'image_md5'):
                         v = (r.get(key) or '').lower()
@@ -945,9 +1234,12 @@ def collect_media_ids(store, targets, progress=None):
                             images.add(v)
                 if r.get('video_md5'):
                     videos.add(r['video_md5'].lower())
+                if r.get('kind') == 'sticker':
+                    add_sticker(r)
         if progress:
             progress(int(i / total * 100), f'解析所选会话 {i}/{total}')
-    return {'images': images, 'voices': voices, 'videos': videos}
+    return {'images': images, 'voices': voices, 'videos': videos,
+            'stickers': sticker_urls, 'links': link_tasks}
 
 
 def _apply_playback(msgs, playback_dir):
@@ -980,6 +1272,32 @@ def _safe_name(name):
     return s
 
 
+def _safe_filename(name, limit=80):
+    """附件文件名：尽量保留原名和扩展名，只做 Windows 合法性处理"""
+    # # 和 % 虽然在 Windows 合法，但会破坏 HTML 相对链接，统一替换
+    s = re.sub(r'[\\/:*?"<>|\r\n\t#%]', '_', name or '').strip().rstrip('. ')
+    stem, ext = os.path.splitext(s)
+    if len(stem) > limit:
+        stem = stem[:limit]
+    s = (stem + ext[:20]).strip() or '附件'
+    if s.lower() in WINDOWS_RESERVED:
+        s = '_' + s
+    return s
+
+
+def _file_export_name(src, ts):
+    """导出附件名：时间前缀 + 原文件名，便于在资源管理器中辨认"""
+    name = _safe_filename(os.path.basename(src))
+    if ts:
+        try:
+            dt = datetime.fromtimestamp(ts).strftime('%Y-%m-%d_%H-%M-%S')
+        except (OSError, ValueError):
+            dt = ''
+        if dt:
+            return f'{dt}_{name}'
+    return name
+
+
 def export_chats(store, targets, formats, since, until, out_dir,
                  archive=True, progress=None):
     """导出多个会话；archive=True 时每个会话生成自包含文件夹
@@ -999,6 +1317,20 @@ def export_chats(store, targets, formats, since, until, out_dir,
 
     def export_one(idx, username):
         msgs = store.messages(username, since=since, until=until)
+
+        # 未执行第 4 步直接导出时，也按需下载本会话的表情
+        def st_progress(done, total_n, _no=idx):
+            if progress:
+                overall = ((_no - 1) + 0.05 * done / max(total_n, 1)) / total * 100
+                progress(int(overall), f'下载表情 {done}/{total_n}')
+        _export_stickers(store, msgs, st_progress)
+
+        # 检测 B 站短链：有效的解析成直链，失效的卡片点击改为标题搜索
+        def lk_progress(done, total_n, _no=idx):
+            if progress:
+                overall = ((_no - 1) + 0.03 * done / max(total_n, 1)) / total * 100
+                progress(int(overall), f'检查分享链接 {done}/{total_n}')
+        _check_share_links(store, msgs, lk_progress)
 
         # 只转码本次导出涉及的视频（HEVC -> H.264），不再全量预处理
         tc_share = 0.0
@@ -1020,7 +1352,7 @@ def export_chats(store, targets, formats, since, until, out_dir,
                     progress=tc_progress, only_md5s=md5s)
                 _apply_playback(msgs, store.video_playback_dir)
 
-        name = contacts.get(username, username)
+        name = emoji_convert(contacts.get(username, username))
         safe = _safe_name(name)
         if archive:
             chat_dir = _unique_dir(batch_dir, safe)
@@ -1033,7 +1365,7 @@ def export_chats(store, targets, formats, since, until, out_dir,
                     progress(int(overall), msg)
             media_map, counts, missing = _collect_media(msgs, chat_dir, cp_progress)
             # 归档模式不再回退绝对 file:///：缺失媒体在 HTML 中标记出来
-            uri_fn = lambda p: media_map.get(p) or ''  # noqa: E731
+            uri_fn = lambda p: _rel_uri(media_map[p]) if p in media_map else ''  # noqa: E731
             prefix = os.path.join(chat_dir, '聊天记录')
             html_path = os.path.join(chat_dir, 'index.html')
         else:
@@ -1053,7 +1385,11 @@ def export_chats(store, targets, formats, since, until, out_dir,
             with open(p, 'w', encoding='utf-8') as f:
                 f.write(f'{name} 聊天记录（{len(msgs)} 条）\n\n')
                 for m in msgs:
-                    f.write(f"[{m['time']}] {m['sender']}: {m['text']}\n")
+                    line = m['text']
+                    url = (m.get('content') or {}).get('url') or ''
+                    if url and url not in line:
+                        line += f' {url}'
+                    f.write(f"[{m['time']}] {m['sender']}: {line}\n")
             files.append(p)
             chat_files.append(p)
         if 'json' in formats:
@@ -1069,7 +1405,11 @@ def export_chats(store, targets, formats, since, until, out_dir,
                 w = csv.writer(f)
                 w.writerow(['时间', '发送者', '类型', '内容', '媒体'])
                 for m in msgs_rel:
-                    w.writerow([m['time'], m['sender'], m['type'], m['text'],
+                    content_text = m['text']
+                    url = (m.get('content') or {}).get('url') or ''
+                    if url and url not in content_text:
+                        content_text += f' {url}'
+                    w.writerow([m['time'], m['sender'], m['type'], content_text,
                                 m['media']])
             files.append(p)
             chat_files.append(p)
@@ -1105,7 +1445,7 @@ def export_chats(store, targets, formats, since, until, out_dir,
         try:
             export_one(idx, username)
         except Exception as e:  # noqa: BLE001
-            name = contacts.get(username, username)
+            name = emoji_convert(contacts.get(username, username))
             errors.append({'username': username, 'name': name,
                            'error': f'{type(e).__name__}: {e}'})
             if progress:

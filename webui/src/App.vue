@@ -395,6 +395,72 @@ function openRecord(content: any) {
   recordShow.value = true
 }
 
+/* ---------- 图片 / 表情放大 ---------- */
+const zoomShow = ref(false)
+const zoomSrc = ref('')
+
+function zoom(src: string) {
+  if (!src) return
+  zoomSrc.value = src
+  zoomShow.value = true
+}
+
+/** 微信内容可能被多次转义（&amp;amp;、&lt;/url&gt;），打开前统一还原 */
+function deepUnescape(s: string) {
+  let v = s || ''
+  for (let i = 0; i < 3; i++) {
+    const n = v
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;|&apos;/g, "'")
+    if (n === v) break
+    v = n
+  }
+  return v
+}
+
+function cleanHref(u?: string) {
+  const s = deepUnescape((u || '').trim())
+  return s.split(/[\s<>"']/)[0]
+}
+
+function safeHref(u?: string) {
+  const s = cleanHref(u)
+  return s && /^(https?:|mailto:)/i.test(s) ? s : undefined
+}
+
+async function openAttach(path: string) {
+  if (!path) return
+  try {
+    const r = await api.openPath(path)
+    if (!r.ok) message.error('打开失败：' + (r.error || '未知错误'))
+  } catch (e: any) {
+    message.error('打开失败：' + (e?.message || e))
+  }
+}
+
+/**
+ * 内嵌 WebView 对 target=_blank 的外链跳转不可靠（尤其 B 站/小红书/网易云等），
+ * 统一拦截后交给系统默认浏览器打开。
+ */
+async function openExternalLink(e: MouseEvent) {
+  const target = e.target as HTMLElement | null
+  const a = target?.closest?.('a[href]') as HTMLAnchorElement | null
+  if (!a) return
+  const href = cleanHref(a.getAttribute('href') || '')
+  if (!/^(https?:|mailto:)/i.test(href)) return
+  e.preventDefault()
+  e.stopPropagation()
+  try {
+    const r = await api.openUrl(href)
+    if (!r.ok) message.error('打开链接失败：' + (r.error || '未知错误'))
+  } catch (err: any) {
+    message.error('打开链接失败：' + (err?.message || err))
+  }
+}
+
 /* ---------- 导出 ---------- */
 const formats = ref<string[]>(['html'])
 const range = ref<[number, number] | null>(null)
@@ -1224,7 +1290,14 @@ onMounted(() => {
             </template>
             <template v-else>
               <div class="meta">{{ m.sender }} · {{ m.time }}</div>
-              <div class="bubble"><MessageContent :msg="m" @open-record="openRecord" /></div>
+              <div class="bubble">
+                <MessageContent
+                  :msg="m"
+                  :account="account?.folder"
+                  @open-record="openRecord"
+                  @zoom="zoom"
+                />
+              </div>
             </template>
           </div>
           <n-empty v-if="!messages.length && !previewLoading" description="没有消息" />
@@ -1249,14 +1322,29 @@ onMounted(() => {
               <span class="rr-sender">{{ r.sender }}</span>
               <span class="rr-time">{{ r.time }}</span>
             </div>
-            <div class="rr-text">{{ r.text }}</div>
+            <div v-if="r.kind === 'link'" class="rr-text">
+              <a
+                v-if="safeHref(r.url)"
+                :href="safeHref(r.url)"
+                target="_blank"
+                rel="noopener noreferrer"
+              >{{ r.title || r.text }}</a>
+              <span v-else>{{ r.text }}</span>
+              <div v-if="r.des" class="rr-sub">{{ r.des }}</div>
+            </div>
+            <div v-else class="rr-text">{{ r.text }}</div>
             <div
-              v-if="r.size || ((r.kind === 'image' || r.kind === 'video') && !r.media)"
+              v-if="r.size || (r.kind === 'file' && !r.file_path)"
               class="rr-meta"
             >
               <span v-if="r.size">{{ r.size }}</span>
-              <span v-if="r.kind === 'image' && !r.media">原图未缓存到本地</span>
-              <span v-if="r.kind === 'video' && !r.media">原视频未缓存到本地</span>
+              <span v-if="r.kind === 'file' && !r.file_path">附件未缓存到本地</span>
+            </div>
+            <div v-if="r.kind === 'file' && r.file_path" class="rr-actions">
+              <button class="rr-btn" type="button" @click="openAttach(r.file_path)">打开</button>
+              <a class="rr-btn" :href="fileUrl(r.file_path)" :download="r.file_name || '附件'">
+                下载
+              </a>
             </div>
             <video
               v-if="r.media && r.media.toLowerCase().endsWith('.mp4')"
@@ -1269,7 +1357,14 @@ onMounted(() => {
               controls
               :src="fileUrl(r.media)"
             />
-            <img v-else-if="r.media" class="rr-img" :src="fileUrl(r.media)" loading="lazy" />
+            <img
+              v-else-if="r.media"
+              class="rr-img"
+              :class="{ 'rr-sticker': r.kind === 'sticker' }"
+              :src="fileUrl(r.media)"
+              loading="lazy"
+              @click="zoom(fileUrl(r.media))"
+            />
           </div>
           <n-empty
             v-if="!(recordData?.records || []).length"
@@ -1277,6 +1372,11 @@ onMounted(() => {
           />
         </div>
       </n-modal>
+
+      <!-- 图片 / 表情放大 -->
+      <div v-if="zoomShow" class="zoom-mask" @click="zoomShow = false">
+        <img class="zoom-img" :src="zoomSrc" alt="预览" @click.stop />
+      </div>
     </div>
   </n-config-provider>
 </template>
@@ -1902,5 +2002,57 @@ html.dark .bubble {
   border-radius: 8px;
   margin-top: 6px;
   display: block;
+  cursor: zoom-in;
+}
+.rr-img.rr-sticker {
+  max-width: 140px;
+  max-height: 140px;
+  object-fit: contain;
+}
+.rr-sub {
+  font-size: 12px;
+  opacity: 0.6;
+  margin-top: 2px;
+}
+.rr-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+}
+.rr-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(7, 193, 96, 0.55);
+  background: rgba(7, 193, 96, 0.08);
+  color: #07a04c;
+  cursor: pointer;
+  text-decoration: none;
+  line-height: 1.6;
+}
+.rr-btn:hover {
+  background: rgba(7, 193, 96, 0.16);
+}
+.zoom-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.82);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  cursor: zoom-out;
+}
+.zoom-img {
+  max-width: 92vw;
+  max-height: 92vh;
+  border-radius: 8px;
+  object-fit: contain;
+  background: #fff;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  cursor: default;
 }
 </style>

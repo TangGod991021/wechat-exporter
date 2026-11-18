@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from app import __version__
 from app.config import (BASE_DIR, load_config, save_config, account_paths,
                         export_dir_display)
-from app.core import discovery, keys, decrypt, media, prepare, tools
+from app.core import discovery, keys, decrypt, media, prepare, stickers, tools
 from app.core.export import ChatStore, export_chats
 from app.core.jobs import JobManager, JobBusy
 
@@ -39,14 +39,37 @@ def _within(path: str, roots) -> bool:
     return False
 
 
+def _account_dirs(cfg: dict) -> list:
+    """本机微信账号目录（只做浅层 listdir，避免每次请求都递归统计）"""
+    root = cfg.get('wechat_root') or discovery.detect_wechat_root()
+    if not root or not os.path.isdir(root):
+        return []
+    if os.path.isdir(os.path.join(root, 'db_storage')):
+        return [root]  # 用户直接选择了账号目录
+    # 与账号发现逻辑保持一致：支持选中更上层目录后的递归查找
+    try:
+        return discovery._scan_account_dirs(root, max_depth=3)
+    except OSError:
+        return []
+
+
 def _file_roots(cfg: dict) -> list:
-    """允许通过 /api/file 读取的目录（仅媒体缓存与导出结果）"""
-    return [cfg.get('media_dir'), cfg.get('export_dir')]
+    """允许通过 /api/file 读取的目录（媒体缓存、导出结果、微信附件）"""
+    roots = [cfg.get('media_dir'), cfg.get('export_dir')]
+    for base in _account_dirs(cfg):
+        roots += [os.path.join(base, 'msg', 'file'),
+                  os.path.join(base, 'msg', 'attach')]
+    return roots
 
 
 def _open_roots(cfg: dict) -> list:
-    """允许用系统程序打开的目录（仅媒体缓存与导出结果）"""
-    return [cfg.get('media_dir'), cfg.get('export_dir')]
+    """允许用系统程序打开的目录（媒体缓存、导出结果、微信附件）"""
+    return _file_roots(cfg)
+
+
+def _sticker_dir(cfg: dict, folder: str) -> str:
+    paths = account_paths(cfg, folder)
+    return os.path.join(Path(paths['images']).parent, 'stickers')
 
 
 class ConfigBody(BaseModel):
@@ -102,7 +125,11 @@ def make_store(cfg, account):
                      os.path.join(base, 'msg', 'attach')],
         video_cache=str(Path(paths['images']).parent / 'video_index.json'),
         video_playback_dir=str(Path(paths['images']).parent / 'videos_h264'),
-        ffmpeg=cfg.get('ffmpeg', 'ffmpeg'))
+        ffmpeg=cfg.get('ffmpeg', 'ffmpeg'),
+        attach_dir=os.path.join(base, 'msg', 'attach'),
+        file_dir=os.path.join(base, 'msg', 'file'),
+        sticker_dir=_sticker_dir(cfg, account['folder']),
+        hardlink_db=os.path.join(paths['data'], 'hardlink', 'hardlink.db'))
 
 
 def account_state(cfg, account):
@@ -391,7 +418,7 @@ def create_app(token: str = ''):
             result['missing_keys'] = missing_keys
             result['decrypt_failed'] = failed_dbs
             for key, label in (('images', '图片'), ('wxam', 'WxAM'),
-                               ('voices', '语音')):
+                               ('stickers', '表情'), ('voices', '语音')):
                 st = result.get(key) or {}
                 if st.get('error'):
                     problems.append(f'{label}: {st["error"]}')
@@ -544,6 +571,25 @@ def create_app(token: str = ''):
         if not os.path.isfile(real):
             raise HTTPException(404, '文件不存在')
         return FileResponse(real)
+
+    @app.get('/api/sticker')
+    def get_sticker(account: str, md5: str = '', url: str = ''):
+        """按需下载并缓存表情（预览时 <img> 直接引用此接口）
+
+        注意不要调用 get_account：表情图会被大量并发请求，遍历账号目录太慢。
+        account 只做格式校验，缓存目录固定在 media_dir/<账号>/stickers。
+        """
+        from fastapi.responses import FileResponse
+        folder = os.path.basename(account or '')
+        if not folder or folder != account or not discovery.FOLDER_RE.match(folder):
+            raise HTTPException(400, '账号参数无效')
+        out_dir = os.path.join(cfg()['media_dir'], folder, 'stickers')
+        path = stickers.find_cached(out_dir, md5, url)
+        if not path:
+            path = stickers.download_one(md5, url, out_dir)
+        if not path or not os.path.isfile(path):
+            raise HTTPException(404, '表情下载失败或链接已失效')
+        return FileResponse(path)
 
     if DIST.exists():
         app.mount('/', StaticFiles(directory=str(DIST), html=True), name='webui')

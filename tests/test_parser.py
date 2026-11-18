@@ -135,6 +135,83 @@ def test_appmsg_new_types():
     assert p['text'].startswith('[群公告]'), p
 
 
+EMOJI_47_XML = ('<msg><emoji fromusername = "wxid_a" tousername = "wxid_b" '
+                'type="2" md5="0123456789abcdef0123456789abcdef" len = "1234" '
+                'cdnurl = "http://wxapp.tc.qq.com/x?m=0123456789abcdef0123456789abcdef&amp;f=1" '
+                '/></msg>')
+
+import base64  # noqa: E402
+
+_EMOJI_URL = (b'http://vweixinf.tc.qq.com/110/20401/stodownload?'
+              b'm=abcdefabcdefabcdefabcdefabcdefab&filekey=x')
+_EMOJI_INFO = base64.b64encode(
+    b'\n abcdefabcdefabcdefabcdefabcdefab\x12\x01x' + _EMOJI_URL).decode()
+EMOJI_8_XML = ('<msg><appmsg><type>8</type><appattach>'
+               '<totallen>100</totallen>'
+               '<emoticonmd5>abcdefabcdefabcdefabcdefabcdefab</emoticonmd5>'
+               '<fileext>gif</fileext></appattach>'
+               f'<emojiinfo>{_EMOJI_INFO}</emojiinfo></appmsg></msg>')
+
+TRANSFER_XML = ('<msg><appmsg><title>微信转账</title><type>2000</type>'
+                '<wcpayinfo><feedesc>￥88.00</feedesc>'
+                '<paymememo>午饭</paymememo>'
+                '<sendertitle>转账给你</sendertitle>'
+                '<receivertitle>已收款</receivertitle>'
+                '<transferid>tid_1</transferid><paymsgid>mid_1</paymsgid>'
+                '</wcpayinfo></appmsg></msg>')
+
+REDPACKET_XML = ('<msg><appmsg><title>微信红包</title><type>2001</type>'
+                 '<wcpayinfo><sendertitle>恭喜发财，大吉大利</sendertitle>'
+                 '<receivertitle>已存入零钱</receivertitle>'
+                 '<paymememo>新年快乐</paymememo></wcpayinfo></appmsg></msg>')
+
+RECORD_LINK_XML = ('<msg><appmsg><title>聊天记录</title><type>19</type>'
+                   '<recorditem><![CDATA[<recordinfo><datalist count="1">'
+                   '<dataitem datatype="5"><datatitle>文章标题</datatitle>'
+                   '<sourcename>张三</sourcename><sourcetime>2026-01-01</sourcetime>'
+                   '<link>https://mp.weixin.qq.com/s/demo</link>'
+                   '<datadesc>摘要内容</datadesc></dataitem>'
+                   '</datalist></recordinfo>]]></recorditem></appmsg></msg>')
+
+
+def test_sticker_parsing():
+    p = parse_content(47, EMOJI_47_XML)
+    assert p['kind'] == 'sticker', p
+    assert p['md5'] == '0123456789abcdef0123456789abcdef', p
+    assert p['cdnurl'].startswith('http://wxapp.tc.qq.com/'), p
+    assert p['size_bytes'] == 1234, p
+
+    p = parse_content((8 << 32) | 49, EMOJI_8_XML)
+    assert p['kind'] == 'sticker', p
+    assert p['md5'] == 'abcdefabcdefabcdefabcdefabcdefab', p
+    assert p['ext'] == 'gif', p
+    assert any('m=abcdef' in u for u in p['cdnurls']), p
+    assert p['cdnurl'], p
+
+
+def test_transfer_and_redpacket():
+    p = parse_content((2000 << 32) | 49, TRANSFER_XML)
+    assert p['kind'] == 'transfer', p
+    assert p['amount'] == '￥88.00', p
+    assert p['memo'] == '午饭', p
+    assert p['status'] == '已收款', p
+    assert p['transferid'] == 'tid_1' and p['paymsgid'] == 'mid_1', p
+    assert '￥88.00' in p['text'] and '午饭' in p['text'], p
+
+    p = parse_content((2001 << 32) | 49, REDPACKET_XML)
+    assert p['kind'] == 'redpacket', p
+    assert p['memo'] == '新年快乐', p
+    assert p['status'] == '已存入零钱', p
+
+
+def test_record_link():
+    p = parse_content((19 << 32) | 49, RECORD_LINK_XML)
+    rec = p['records'][0]
+    assert rec['kind'] == 'link', rec
+    assert rec['url'] == 'https://mp.weixin.qq.com/s/demo', rec
+    assert rec['title'] == '文章标题', rec
+
+
 def test_card_and_location():
     p = parse_content(42, CARD_XML)
     assert p['kind'] == 'card' and '张三' in p['text'], p
@@ -190,6 +267,9 @@ if __name__ == '__main__':
     test_pat()
     test_unknown_never_leaks_xml()
     test_appmsg_new_types()
+    test_sticker_parsing()
+    test_transfer_and_redpacket()
+    test_record_link()
     test_card_and_location()
     test_real_db_optional()
     print('PARSER TESTS OK')

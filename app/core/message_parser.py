@@ -7,15 +7,23 @@
 parse_content() 输出结构化字典，供导出与界面渲染使用：
   {kind, text, title, des, url, quote, file, app, amount, ...}
 """
+import base64
 import html as html_mod
+import os
 import re
 import xml.etree.ElementTree as ET
 from urllib.parse import quote
+
+from app.core.emoji import convert as emoji_convert
+from app.core.textutil import clean_text, clean_url
 
 MEDIA_TEXT = {
     3: '[图片]', 34: '[语音]', 43: '[视频]', 47: '[表情]',
     48: '[位置]', 50: '[语音通话]', 42: '[名片]',
 }
+# emojiinfo（base64 protobuf）里的 CDN 地址：只取可打印 ASCII
+_URL_RE_B = re.compile(rb'https?://[!-~]+')
+_EMOJI_DEFAULT_LABEL = '[表情]'
 
 
 def split_local_type(lt):
@@ -27,7 +35,7 @@ def split_local_type(lt):
 def _clean(s):
     if not s:
         return ''
-    s = html_mod.unescape(s)
+    s = clean_text(s)
     s = re.sub(r'<[^>]+>', ' ', s)
     s = re.sub(r'[\t\r\n]+', ' ', s)
     s = re.sub(r'\s{2,}', ' ', s)
@@ -87,14 +95,18 @@ def _parse_xml(raw):
 
 
 def _quote_content(raw, qtype, depth=0):
-    """引用原文：纯文本直接清洗；嵌套 XML 递归解析一层"""
+    """引用原文：纯文本直接清洗；嵌套 XML 递归解析一层。
+
+    返回 (文本, 类型, 链接)，链接用于让引用里的分享链接仍可点击。
+    """
     raw = (raw or '').strip()
     if not raw:
-        return MEDIA_TEXT.get(qtype, '[消息]'), 'media'
+        return MEDIA_TEXT.get(qtype, '[消息]'), 'media', ''
     if raw.startswith('<') and depth < 2:
         sub = parse_content(qtype, raw, depth + 1)
-        return sub.get('text') or sub.get('title') or '[消息]', sub.get('kind', 'text')
-    return _clean(raw), 'text'
+        text = sub.get('text') or sub.get('title') or '[消息]'
+        return text, sub.get('kind', 'text'), sub.get('url', '')
+    return _emoji(_clean(raw)), 'text', ''
 
 
 def _int(s, default=0):
@@ -102,6 +114,61 @@ def _int(s, default=0):
         return int(str(s).strip())
     except Exception:
         return default
+
+
+def _emoji(s):
+    """把内置表情代码转成 Unicode；文件名等字段不要调用"""
+    return emoji_convert(s) if s else s
+
+
+def _find_el(root, *paths):
+    """按相对路径查找第一个元素（不能用 `a or b`：空元素在 ElementTree 中为假）"""
+    if root is None:
+        return None
+    for path in paths:
+        el = root.find(path)
+        if el is not None:
+            return el
+    return None
+
+
+def _nested_text(root, *paths):
+    """按多个相对路径取第一个非空文本（ElementTree 不支持联合查询）"""
+    if root is None:
+        return ''
+    for path in paths:
+        el = root.find(path)
+        if el is not None and (el.text or '').strip():
+            return (el.text or '').strip()
+    return ''
+
+
+def emoji_urls(raw_b64):
+    """解析 appmsg/emojiinfo（base64 protobuf）里的 CDN 地址列表"""
+    raw_b64 = (raw_b64 or '').strip()
+    if not raw_b64:
+        return []
+    try:
+        raw = base64.b64decode(raw_b64 + '=' * (-len(raw_b64) % 4))
+    except Exception:
+        return []
+    out = []
+    for m in _URL_RE_B.findall(raw):
+        try:
+            out.append(m.decode('ascii'))
+        except UnicodeDecodeError:
+            continue
+    return out
+
+
+def pick_emoji_url(urls, md5=''):
+    """优先返回与消息 md5 匹配的数据地址，其次第一个地址"""
+    md5 = (md5 or '').lower()
+    if md5:
+        for u in urls:
+            if f'm={md5}' in u.lower():
+                return u
+    return urls[0] if urls else ''
 
 
 RECORD_KINDS = {
@@ -136,17 +203,35 @@ def _parse_record(app):
         time_text = _clean(_txt(it, 'sourcetime'))
         title = _clean(_txt(it, 'datatitle'))
         desc = _clean(_txt(it, 'datadesc'))
+        link = clean_url(_nested_text(it, 'link', 'weburlitem/link', 'url'))
+        if not link:
+            for cand in (title, desc):
+                if cand.lower().startswith(('http://', 'https://')):
+                    link = clean_url(cand)
+                    break
         text = desc or title or RECORD_PLACEHOLDER.get(kind, '[消息]')
+        if kind != 'file':
+            # 文件项的 title 是磁盘文件名，不能替换表情代码
+            title, desc, text = _emoji(title), _emoji(desc), _emoji(text)
+        md5 = _clean(_txt(it, 'fullmd5') or _txt(it, 'md5'))
+        urls = emoji_urls(_txt(it, 'emojiinfo'))
         out.append({
             'datatype': dt,
             'kind': kind,
-            'sender': sender or '未知',
+            'sender': _emoji(sender) or '未知',
             'time': time_text,
             'text': text,
             'title': title,
-            'md5': _clean(_txt(it, 'fullmd5')),
+            'des': desc,
+            'url': link,
+            'md5': md5,
             'thumb_md5': _clean(_txt(it, 'thumbfullmd5')),
             'size': _fmt_size(_txt(it, 'datasize')),
+            'size_bytes': _int(_txt(it, 'datasize')),
+            'fmt': _clean(_txt(it, 'datafmt')),
+            'dataid': _clean(it.get('dataid')),
+            'cdnurl': pick_emoji_url(urls, md5),
+            'cdnurls': urls,
         })
     return out
 
@@ -155,7 +240,7 @@ def _parse_appmsg(raw, sub_hint, depth=0):
     root = _parse_xml(raw)
     if root is None:
         # XML 损坏：退回正则提取 title/des/type
-        title = _clean(_regex_field(raw, 'title') or _regex_field(raw, 'des'))
+        title = _emoji(_clean(_regex_field(raw, 'title') or _regex_field(raw, 'des')))
         return {'kind': 'app', 'text': f'[应用消息] {title}' if title else '[应用消息]',
                 'title': title, 'des': '', 'url': ''}
 
@@ -169,7 +254,7 @@ def _parse_appmsg(raw, sub_hint, depth=0):
     sub = _int(_txt(app, 'type'), sub_hint)
     title = _clean(_txt(app, 'title'))
     des = _clean(_txt(app, 'des'))
-    url = _clean(_txt(app, 'url'))
+    url = clean_url(_txt(app, 'url'))
     source = _clean(_txt(app, 'sourcedisplayname'))
     appname = _clean(_txt(app, 'appname')) or _clean(_txt(root, 'appinfo/appname'))
 
@@ -179,10 +264,9 @@ def _parse_appmsg(raw, sub_hint, depth=0):
         qname = _clean(_txt(refer, 'displayname'))
         qraw = _txt(refer, 'content')
         qtype = _int(_txt(refer, 'type'), 1)
-        qtext, qkind = _quote_content(qraw, qtype, depth)
-        if not qname:
-            qname = '原消息'
-        reply = title or '[引用消息]'
+        qtext, qkind, qurl = _quote_content(qraw, qtype, depth)
+        qname = _emoji(qname) or '原消息'
+        reply = _emoji(title) or '[引用消息]'
         summary = f'[引用] {reply[:60]}'
         if qtext:
             summary += f' ｜ 引用自 {qname}：{qtext[:60]}'
@@ -190,57 +274,74 @@ def _parse_appmsg(raw, sub_hint, depth=0):
             'kind': 'quote',
             'text': summary,
             'reply': reply,
-            'quote': {'sender': qname, 'text': qtext, 'kind': qkind},
+            'quote': {'sender': qname, 'text': qtext, 'kind': qkind,
+                      'url': qurl},
         }
 
     # ---- 链接 ----
     if sub == 5:
-        real_url = url or (title if title.startswith('http') else '')
+        real_url = url or (clean_url(title) if title.startswith('http') else '')
+        title, des = _emoji(title), _emoji(des)
         text = f'[链接] {title or real_url or des}'
         return {'kind': 'link', 'text': text, 'title': title,
-                'des': des, 'url': real_url, 'source': source}
+                'des': des, 'url': real_url, 'source': _emoji(source)}
 
     # ---- 表情 / 动图（type 8）----
     if sub == 8:
         attach = app.find('appattach')
         ext = _clean(_txt(attach, 'fileext')) if attach is not None else ''
-        md5 = _clean(_txt(attach, 'emoticonmd5')) if attach is not None else ''
-        label = '[动图]' if ext.lower() in ('gif', 'mp4') else '[表情]'
+        md5 = _clean(_txt(attach, 'emoticonmd5')).lower() if attach is not None else ''
+        info_b64 = _nested_text(app, 'emojiinfo', 'appattach/emojiinfo')
+        urls = emoji_urls(info_b64)
+        label = '[动图]' if ext.lower() in ('gif', 'mp4') else _EMOJI_DEFAULT_LABEL
+        total = _txt(attach, 'totallen') if attach is not None else ''
         return {'kind': 'sticker', 'text': label, 'title': label,
-                'ext': ext, 'md5': md5}
+                'ext': ext, 'md5': md5, 'size': _fmt_size(total),
+                'size_bytes': _int(total),
+                'cdnurl': pick_emoji_url(urls, md5), 'cdnurls': urls}
 
     # ---- 文件 ----
     if sub in (6, 74):
         attach = app.find('appattach')
-        size = _fmt_size(_txt(attach, 'totallen')) if attach is not None else ''
+        total = _txt(attach, 'totallen') if attach is not None else ''
+        size = _fmt_size(total)
+        # 文件消息没有 md5，靠“文件名 + 大小 + 时间”在本地 msg/file 中定位
+        ext = _clean(_txt(attach, 'fileext')) if attach is not None else ''
         name = title or des or '[文件]'
+        if not ext:
+            ext = os.path.splitext(name)[1].lstrip('.').lower()
         text = f'[文件] {name}' + (f' ({size})' if size else '')
         return {'kind': 'file', 'text': text, 'title': name,
-                'size': size, 'url': url}
+                'size': size, 'size_bytes': _int(total),
+                'ext': ext, 'url': url}
 
     # ---- 小程序 / 云文档 ----
     if sub in (33, 36):
-        appname = source or des or ''
+        appname = _emoji(source or des or '')
+        title, des = _emoji(title), _emoji(des)
         text = f'[小程序] {title}' + (f' · {appname}' if appname else '')
         return {'kind': 'miniprogram', 'text': text, 'title': title,
                 'des': des, 'app': appname, 'url': url}
 
     # ---- 音乐 ----
     if sub == 3:
+        title, des = _emoji(title), _emoji(des)
         text = f'[音乐] {title}' + (f' - {des}' if des else '')
         return {'kind': 'music', 'text': text, 'title': title,
-                'des': des, 'url': url, 'app': source}
+                'des': des, 'url': url, 'app': _emoji(source)}
 
     # ---- 视频分享 ----
     if sub == 4:
+        title, des = _emoji(title), _emoji(des)
         text = f'[视频] {title}' + (f' · {des}' if des else '')
         return {'kind': 'video_share', 'text': text, 'title': title,
-                'des': des, 'url': url, 'app': source}
+                'des': des, 'url': url, 'app': _emoji(source)}
 
     # ---- 聊天记录 / 笔记（type 19、24）----
     if sub in (19, 24):
         records = _parse_record(app)
         is_note = sub == 24
+        title, des = _emoji(title), _emoji(des)
         if not title and des:
             title = des.split('\n')[0][:60]
         text = ('[笔记] ' if is_note else '[聊天记录] ') + (title or '')
@@ -255,34 +356,65 @@ def _parse_appmsg(raw, sub_hint, depth=0):
 
     # ---- 转账 / 红包 ----
     if sub == 2000:
-        pay = app.find('wcpayinfo') or root.find('.//wcpayinfo')
+        pay = _find_el(app, 'wcpayinfo', '../wcpayinfo') or _find_el(root, './/wcpayinfo')
         amount = _clean(_txt(pay, 'feedesc')) if pay is not None else ''
+        memo = (_clean(_txt(pay, 'paymememo')) or _clean(_txt(pay, 'paymemo'))
+                or _clean(_txt(pay, 'memo'))) if pay is not None else ''
+        status = (_clean(_txt(pay, 'receivertitle')) or _clean(_txt(pay, 'sendertitle'))
+                  or _clean(_txt(pay, 'payerrordesc'))) if pay is not None else ''
+        title, des, memo = _emoji(title), _emoji(des), _emoji(memo)
+        status = _emoji(status)
+        extra = {
+            'amount': amount,
+            'memo': memo,
+            'status': status,
+            'paysubtype': _clean(_txt(pay, 'paysubtype')) if pay is not None else '',
+            'transferid': _clean(_txt(pay, 'transferid')) if pay is not None else '',
+            'paymsgid': _clean(_txt(pay, 'paymsgid')) if pay is not None else '',
+            'begintime': (_clean(_txt(pay, 'begintransfertime'))
+                          or _clean(_txt(pay, 'transfertime'))) if pay is not None else '',
+            'sendertitle': _emoji(_clean(_txt(pay, 'sendertitle'))) if pay is not None else '',
+            'receivertitle': _emoji(_clean(_txt(pay, 'receivertitle'))) if pay is not None else '',
+        }
         text = f'[转账] {amount or title or des}'
-        return {'kind': 'transfer', 'text': text, 'title': title,
-                'des': des, 'amount': amount, 'url': url}
+        if memo:
+            text += f' · {memo}'
+        return {'kind': 'transfer', 'text': text, 'title': title or '转账',
+                'des': des, 'url': url, **extra}
     if sub == 2001:
-        text = f'[红包] {des or title or "微信红包"}'
-        return {'kind': 'redpacket', 'text': text, 'title': title,
-                'des': des, 'url': url}
+        pay = _find_el(app, 'wcpayinfo', '../wcpayinfo') or _find_el(root, './/wcpayinfo')
+        memo = (_clean(_txt(pay, 'paymememo')) or _clean(_txt(pay, 'sendertitle'))
+                or _clean(_txt(pay, 'memo'))) if pay is not None else ''
+        status = (_clean(_txt(pay, 'receivertitle'))
+                  or _clean(_txt(pay, 'payerrordesc'))) if pay is not None else ''
+        amount = _clean(_txt(pay, 'feedesc')) if pay is not None else ''
+        title, des, memo = _emoji(title), _emoji(des), _emoji(memo)
+        status = _emoji(status)
+        text = f'[红包] {memo or des or title or "微信红包"}'
+        return {'kind': 'redpacket', 'text': text, 'title': title or '红包',
+                'des': des, 'url': url, 'amount': amount, 'memo': memo,
+                'status': status}
 
     # ---- 拍一拍 ----
     if sub == 62:
-        text = title or '拍了拍我'
+        text = _emoji(title) or '拍了拍我'
         return {'kind': 'pat', 'text': text, 'title': text}
 
     # ---- 位置共享 ----
     if sub == 17:
-        text = title or '[位置共享]'
+        text = _emoji(title) or '[位置共享]'
         return {'kind': 'system', 'text': text, 'title': text}
 
     # ---- 接龙 ----
     if sub == 53:
-        body = _clean(_txt(app, 'content'))
+        body = _emoji(_clean(_txt(app, 'content')))
+        title = _emoji(title)
         text = title or body or '[接龙]'
         return {'kind': 'solitaire', 'text': text, 'title': title, 'des': body}
 
     # ---- 客服模板 ----
     if sub == 116:
+        title, des = _emoji(title), _emoji(des)
         text = f'{title}' + (f' · {des}' if des else '')
         return {'kind': 'kf_template', 'text': text, 'title': title, 'des': des}
 
@@ -294,12 +426,12 @@ def _parse_appmsg(raw, sub_hint, depth=0):
         if inner:
             root2 = _parse_xml(inner)
             if root2 is not None:
-                desc = _clean(_txt(root2, 'desc'))
+                desc = _emoji(_clean(_txt(root2, 'desc')))
                 if desc:
                     items.append(desc)
                 for it in root2.findall('.//dataitem'):
-                    t = _clean(_txt(it, 'datatitle'))
-                    d = _clean(_txt(it, 'datadesc'))
+                    t = _emoji(_clean(_txt(it, 'datatitle')))
+                    d = _emoji(_clean(_txt(it, 'datadesc')))
                     if t or d:
                         items.append(t or d)
         text = '[群公告]' + (f' · {len(items)} 项' if items else '')
@@ -308,15 +440,16 @@ def _parse_appmsg(raw, sub_hint, depth=0):
 
     # ---- 版本不支持 / 系统提示 ----
     if sub in (50, 51, 63):
-        text = title or des or '[该消息暂不支持展示]'
+        text = _emoji(title or des) or '[该消息暂不支持展示]'
         return {'kind': 'unsupported', 'text': text, 'title': text}
 
     # ---- 其他应用消息：只取标题，绝不输出 XML ----
+    title, des = _emoji(title), _emoji(des)
     text = title or des or '[应用消息]'
     if not text.startswith('['):
         text = f'[应用消息] {text}'
     return {'kind': 'app', 'text': text, 'title': title,
-            'des': des, 'url': url, 'app': source}
+            'des': des, 'url': url, 'app': _emoji(source)}
 
 
 def parse_content(local_type, raw, depth=0):
@@ -325,17 +458,32 @@ def parse_content(local_type, raw, depth=0):
     raw = raw or ''
 
     if base == 1:
-        return {'kind': 'text', 'text': raw}
-    if base in (3, 34, 43, 47):
-        return {'kind': {3: 'image', 34: 'voice', 43: 'video', 47: 'sticker'}[base],
+        return {'kind': 'text',
+                'text': _emoji(clean_text(raw))}
+    if base in (3, 34, 43):
+        return {'kind': {3: 'image', 34: 'voice', 43: 'video'}[base],
                 'text': MEDIA_TEXT.get(base, '[消息]')}
+    if base == 47:
+        # <msg><emoji type="1|2|3" md5="..." len="..." cdnurl="...">
+        root = _parse_xml(raw)
+        el = None
+        if root is not None:
+            el = root if root.tag == 'emoji' else root.find('.//emoji')
+        md5 = (el.get('md5') or '').strip().lower() if el is not None else ''
+        cdn = html_mod.unescape((el.get('cdnurl') or '').strip()) if el is not None else ''
+        stype = (el.get('type') or '').strip() if el is not None else ''
+        total = (el.get('len') or '').strip() if el is not None else ''
+        return {'kind': 'sticker', 'text': _EMOJI_DEFAULT_LABEL,
+                'title': _EMOJI_DEFAULT_LABEL, 'md5': md5, 'cdnurl': cdn,
+                'sticker_type': stype, 'size': _fmt_size(total),
+                'size_bytes': _int(total)}
     if base == 42:
         root = _parse_xml(raw)
         if root is None and '<' in raw:
             root = _parse_xml(raw[raw.find('<'):])
         if root is None:
             return {'kind': 'card', 'text': '[名片]', 'title': ''}
-        nickname = _clean(root.get('nickname'))
+        nickname = _emoji(_clean(root.get('nickname')))
         username = root.get('username') or ''
         title = nickname or username or '名片'
         return {'kind': 'card', 'text': f'[名片] {title}',
@@ -349,9 +497,9 @@ def parse_content(local_type, raw, depth=0):
         if el is None:
             s = _clean(raw)
             return {'kind': 'location', 'text': s or '[位置]', 'title': s}
-        label = _clean(el.get('label'))
-        poiname = _clean(el.get('poiname'))
-        city = _clean(el.get('cityname'))
+        label = _emoji(_clean(el.get('label')))
+        poiname = _emoji(_clean(el.get('poiname')))
+        city = _emoji(_clean(el.get('cityname')))
         lat = (el.get('x') or '').strip()
         lng = (el.get('y') or '').strip()
         place = label or poiname or city or '位置'
@@ -368,10 +516,10 @@ def parse_content(local_type, raw, depth=0):
     if base == 50:
         return {'kind': 'call', 'text': '[语音通话]'}
     if base in (10000, 10002):
-        return {'kind': 'system', 'text': _clean(raw)}
+        return {'kind': 'system', 'text': _emoji(_clean(raw))}
     if base == 49:
         return _parse_appmsg(raw, sub, depth)
 
     # 未知基础类型：清理后展示，避免 XML 泄漏
-    text = _clean(raw)
+    text = _emoji(_clean(raw))
     return {'kind': 'text', 'text': text}
