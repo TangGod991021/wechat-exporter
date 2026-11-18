@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """按所选会话准备媒体数据（五步流程的第 4 步）"""
-from app.core import stickers
+from app.core import links, stickers
 from app.core.export import collect_media_ids
 from app.core.media import (default_workers, prepare_images, prepare_voices,
                             prepare_video_playback, prepare_wxam)
@@ -38,7 +38,20 @@ def prepare_selected_media(store, targets, attach_dir, wxid, codes, ffmpeg,
         'voices': len(ids['voices']),
         'videos': len(ids['videos']),
         'stickers': len(ids.get('stickers') or {}),
+        'links': len(ids.get('links') or {}),
     }
+
+    # 检查 B 站等分享短链：有效则记录直链，失效则界面改用标题搜索
+    if ids.get('links'):
+        try:
+            progress(15, '正在检查分享链接...')
+            links.check_urls(
+                list(ids['links']), store.link_cache_path(),
+                progress=lambda done, total: progress(
+                    15 + int(done / max(total, 1) * 5),
+                    f'检查分享链接 {done}/{total}'))
+        except Exception:  # noqa: BLE001
+            pass
 
     index = {}
     stats['videos_indexed'] = 0

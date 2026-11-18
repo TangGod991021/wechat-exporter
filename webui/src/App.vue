@@ -1267,7 +1267,7 @@ onMounted(() => {
         :title="previewSession?.name + ' · 消息预览'"
         :bordered="false"
       >
-        <div class="chat-view">
+        <div class="chat-view" @click.capture="openExternalLink">
           <div v-if="messages.length" style="text-align: center; margin-bottom: 8px">
             <n-button
               size="tiny"
@@ -1312,7 +1312,7 @@ onMounted(() => {
         :title="recordData?.title || '转发聊天记录'"
         :bordered="false"
       >
-        <div class="record-view">
+        <div class="record-view" @click.capture="openExternalLink">
           <div
             v-for="(r, i) in recordData?.records || []"
             :key="i"

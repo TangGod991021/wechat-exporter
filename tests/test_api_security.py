@@ -86,6 +86,59 @@ def main():
             start.assert_called_once_with(exports)
     print('  ok  open-path 白名单')
 
+    # 4.1 微信附件目录可读，账号目录外的路径仍拒绝
+    with tempfile.TemporaryDirectory() as tmp:
+        root = os.path.join(tmp, 'xwechat_files')
+        acc = os.path.join(root, 'wxid_demo_1234')
+        os.makedirs(os.path.join(acc, 'db_storage'))
+        attach = os.path.join(acc, 'msg', 'file', '2026-01')
+        os.makedirs(attach)
+        pdf = os.path.join(attach, 'a.pdf')
+        with open(pdf, 'w', encoding='utf-8') as f:
+            f.write('pdf')
+        app.state.cfg.update({'wechat_root': root,
+                              'media_dir': os.path.join(tmp, 'media'),
+                              'export_dir': os.path.join(tmp, 'exports')})
+        r = client.get('/api/file', params={'path': pdf, 'token': TOKEN})
+        assert r.status_code == 200, r.text
+        with mock.patch('app.api.routes.os.startfile') as start:
+            r = client.post('/api/open-path', json={'path': pdf},
+                            headers={'X-Auth-Token': TOKEN})
+            assert r.status_code == 200, r.text
+            start.assert_called_once_with(pdf)
+    print('  ok  微信附件目录访问')
+
+    # 4.2 表情接口：账号格式校验 + 地址白名单
+    r = client.get('/api/sticker', params={'account': '../evil', 'md5': 'a' * 32,
+                                           'token': TOKEN})
+    assert r.status_code == 400, r.status_code
+    r = client.get('/api/sticker',
+                   params={'account': 'wxid_demo_1234', 'md5': 'a' * 32,
+                           'url': 'http://evil.example/a', 'token': TOKEN})
+    assert r.status_code == 404, '非腾讯域名不应被下载'
+    print('  ok  表情接口安全')
+
+    # 4.3 外链统一交给系统浏览器，拒绝本地/脚本协议
+    with mock.patch('app.api.routes.webbrowser.open', return_value=True) as wb:
+        r = client.post('/api/open-url', json={'url': 'https://b23.tv/abc'},
+                        headers={'X-Auth-Token': TOKEN})
+        assert r.status_code == 200 and r.json()['ok'] is True, r.text
+        wb.assert_called_once_with('https://b23.tv/abc')
+        # 双重转义 + XML 尾巴要清洗后再打开
+        wb.reset_mock()
+        bad = ('https://b23.tv/X?a=1&amp;amp;b=2&lt;/url&gt;')
+        r = client.post('/api/open-url', json={'url': bad},
+                        headers={'X-Auth-Token': TOKEN})
+        assert r.status_code == 200, r.text
+        wb.assert_called_once_with('https://b23.tv/X?a=1&b=2')
+        for bad in ('file:///C:/Windows/win.ini', 'javascript:alert(1)',
+                    'data:text/html,x'):
+            r = client.post('/api/open-url', json={'url': bad},
+                            headers={'X-Auth-Token': TOKEN})
+            assert r.status_code == 400, (bad, r.status_code)
+        wb.assert_called_once()
+    print('  ok  外链打开接口')
+
     # 5. 链接 scheme 只允许 http/https/mailto
     assert _safe_href('https://example.com/a') == 'https://example.com/a'
     assert _safe_href('mailto:a@b.com') == 'mailto:a@b.com'

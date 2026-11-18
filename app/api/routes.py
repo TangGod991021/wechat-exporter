@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import sys
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from app.config import (BASE_DIR, load_config, save_config, account_paths,
                         export_dir_display)
 from app.core import discovery, keys, decrypt, media, prepare, stickers, tools
 from app.core.export import ChatStore, export_chats
+from app.core.textutil import clean_url
 from app.core.jobs import JobManager, JobBusy
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -81,6 +83,10 @@ class ConfigBody(BaseModel):
 
 class AccountBody(BaseModel):
     account: str
+
+
+class UrlBody(BaseModel):
+    url: str
 
 
 class ExportBody(BaseModel):
@@ -561,6 +567,18 @@ def create_app(token: str = ''):
             return {'ok': True}
         except Exception as e:  # noqa: BLE001
             return {'ok': False, 'error': str(e)}
+
+    @app.post('/api/open-url')
+    def open_url(body: UrlBody):
+        """用系统默认浏览器打开外部链接（pywebview 内嵌窗口跳转不可靠）"""
+        url = clean_url(body.url)
+        if not url.lower().startswith(('http://', 'https://', 'mailto:')):
+            raise HTTPException(400, '只允许打开 http/https/mailto 链接')
+        try:
+            ok = webbrowser.open(url)
+        except Exception as e:  # noqa: BLE001
+            return {'ok': False, 'error': str(e)}
+        return {'ok': bool(ok)}
 
     @app.get('/api/file')
     def get_file(path: str):

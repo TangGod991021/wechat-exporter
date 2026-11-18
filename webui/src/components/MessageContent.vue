@@ -94,6 +94,60 @@ function safeUrlOf(u?: string) {
 
 const safeUrl = computed(() => safeUrlOf(content.value.url))
 
+/** B 站短链失效时的备用搜索（b23.tv 短链可能被平台回收） */
+const biliSearchUrl = computed(() => {
+  if (kind.value !== 'video_share') return ''
+  const u = safeUrl.value || ''
+  if (!/^https?:\/\/(?:b23\.tv|[\w.-]*bilibili\.com)\//i.test(u)) return ''
+  const title = content.value.title || ''
+  return title
+    ? 'https://search.bilibili.com/all?keyword=' + encodeURIComponent(title)
+    : ''
+})
+
+/** 视频卡片点击目标：失效短链改为标题搜索，有效短链优先用解析后的直链 */
+const cardHref = computed(() => {
+  if (kind.value === 'video_share') {
+    if (content.value.link_expired && biliSearchUrl.value) return biliSearchUrl.value
+    return safeUrlOf(content.value.resolved_url) || safeUrl.value
+  }
+  return safeUrl.value
+})
+
+const copied = ref(false)
+let copyTimer: ReturnType<typeof setTimeout> | null = null
+
+async function copyTitle() {
+  const text = content.value.title || props.msg?.text || ''
+  if (!text) return
+  const mark = () => {
+    copied.value = true
+    if (copyTimer) clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => {
+      copied.value = false
+    }, 1500)
+  }
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      mark()
+      return
+    }
+  } catch {
+    /* 回退到 execCommand */
+  }
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    mark()
+  } catch {
+    window.alert('复制失败，请手动选择标题复制')
+  }
+}
 
 const domain = computed(() => {
   const m = /^https?:\/\/([^/]+)/.exec(cleanUrl(content.value.url) || '')
@@ -109,10 +163,21 @@ function escapeHtml(s: string) {
 }
 
 function linkify(s: string) {
-  const esc = escapeHtml(s)
-  return esc.replace(/(https?:\/\/[^\s<"]+)/g, (u) => {
-    return `<a href="${u}" target="_blank" rel="noopener">${u}</a>`
-  })
+  const raw = deepUnescape(s).replace(/<\/?url>/gi, '')
+  const re = /https?:\/\/[^\s<"]+/g
+  let out = ''
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(raw))) {
+    out += escapeHtml(raw.slice(last, m.index))
+    const u = m[0]
+    out +=
+      `<a href="${escapeHtml(u)}" target="_blank" rel="noopener">` +
+      `${escapeHtml(u)}</a>`
+    last = m.index + u.length
+  }
+  out += escapeHtml(raw.slice(last))
+  return out
 }
 </script>
 
@@ -138,15 +203,21 @@ function linkify(s: string) {
     <!-- 链接 -->
     <template v-else-if="kind === 'link'">
       <a
-        class="card"
+        class="card card-link"
         :href="safeUrl"
         target="_blank"
         rel="noopener noreferrer"
       >
-        <div class="card-title" v-html="linkify(content.title || content.url || msg.text)" />
+        <div class="card-title">{{ content.title || content.url || msg.text }}</div>
         <div v-if="content.des" class="card-des">{{ content.des }}</div>
         <div v-if="domain" class="card-meta">{{ domain }}</div>
+        <div v-if="safeUrl" class="card-meta">点击打开</div>
       </a>
+      <div v-if="content.title || msg.text" class="card-tools">
+        <button type="button" class="copy-title" title="复制标题" @click="copyTitle">
+          {{ copied ? '✅ 已复制' : '📋 复制标题' }}
+        </button>
+      </div>
     </template>
 
     <!-- 表情 -->
@@ -240,12 +311,44 @@ function linkify(s: string) {
       </div>
     </template>
 
-    <!-- 小程序 / 音乐 / 视频分享等 -->
+    <!-- 小程序 / 音乐 / 视频分享等（有 url 时整卡可点击） -->
     <template v-else-if="cardKinds.includes(kind)">
-      <div class="card">
+      <a
+        v-if="cardHref"
+        class="card card-link"
+        :href="cardHref"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
         <div class="card-title">{{ icon }} {{ content.title || msg.text }}</div>
         <div v-if="content.des" class="card-des">{{ content.des }}</div>
         <div v-if="content.app" class="card-meta">{{ content.app }}</div>
+        <div v-if="content.link_expired" class="card-meta warn">
+          原短链已失效 · 点击按标题搜索
+        </div>
+        <div v-else class="card-meta">点击打开</div>
+      </a>
+      <div v-else class="card">
+        <div class="card-title">{{ icon }} {{ content.title || msg.text }}</div>
+        <div v-if="content.des" class="card-des">{{ content.des }}</div>
+        <div v-if="content.app" class="card-meta">{{ content.app }}</div>
+      </div>
+      <div v-if="kind === 'video_share' || kind === 'music' || kind === 'miniprogram'" class="card-tools">
+        <button type="button" class="copy-title" title="复制标题" @click="copyTitle">
+          {{ copied ? '✅ 已复制' : '📋 复制标题' }}
+        </button>
+        <a
+          v-if="biliSearchUrl"
+          :href="biliSearchUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+        >搜索标题</a>
+        <a
+          v-if="content.link_expired && safeUrl"
+          :href="safeUrl"
+          target="_blank"
+          rel="noopener noreferrer"
+        >原短链</a>
       </div>
     </template>
 
@@ -360,8 +463,39 @@ a {
 .fallback-link:hover {
   text-decoration: underline;
 }
+.card-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.card-tools a {
+  color: #07a04c;
+}
+.copy-title {
+  border: 1px solid rgba(127, 127, 127, 0.3);
+  background: rgba(127, 127, 127, 0.06);
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 12px;
+  cursor: pointer;
+  color: inherit;
+}
+.copy-title:hover {
+  border-color: rgba(7, 193, 96, 0.55);
+  color: #07a04c;
+}
 .card-meta.warn {
   color: #c33;
+}
+a.card-link {
+  text-decoration: none;
+  color: inherit;
+}
+a.card-link:hover {
+  border-color: rgba(7, 193, 96, 0.55);
 }
 .sys {
   font-size: 12px;

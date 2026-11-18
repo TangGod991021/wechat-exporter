@@ -695,17 +695,32 @@ SAFE_HREF_RE = re.compile(r'^(https?://|mailto:)', re.I)
 
 
 def _safe_href(url):
-    """只允许 http/https/mailto，阻止 javascript: / data: 等可执行 scheme"""
-    url = (url or '').strip()
+    """只允许 http/https/mailto，阻止 javascript: / data: 等可执行 scheme
+
+    先做多轮反转义并截掉 `&lt;/url&gt;`、空白等 XML 残留，避免把
+    `https://b23.tv/x?...&amp;amp;...&lt;/url&gt;` 这类畸形地址当成链接打开。
+    """
+    url = clean_url(url)
     return url if SAFE_HREF_RE.match(url) else ''
 
 
 def linkify(s):
-    """先转义再识别链接，避免注入"""
-    esc = html.escape(s or '')
-    return URL_RE.sub(
-        lambda m: f'<a href="{m.group(1)}" target="_blank" rel="noopener noreferrer">{m.group(1)}</a>',
-        esc)
+    """多轮反转义后识别链接；分段转义，避免双重转义和注入
+
+    URL 在原始文本上匹配，遇到 `</url>` 的 `<` 会自然截断；
+    然后再分别转义正文和 URL，得到正确的 href。
+    """
+    s = clean_text(s or '')
+    s = re.sub(r'</?url>', '', s, flags=re.I)
+    out, last = [], 0
+    for m in URL_RE.finditer(s):
+        out.append(html.escape(s[last:m.start()]))
+        url = m.group(1)
+        out.append(f'<a href="{html.escape(url)}" target="_blank" '
+                   f'rel="noopener noreferrer">{html.escape(url)}</a>')
+        last = m.end()
+    out.append(html.escape(s[last:]))
+    return ''.join(out)
 
 
 def _domain(url):
@@ -803,8 +818,19 @@ def _rich_body(m, uri_fn=None):
         des = (f'<div class="card-des">{html.escape(c.get("des", ""))}</div>'
                if c.get('des') else '')
         meta = f'<div class="card-meta">{html.escape(_domain(href))}</div>' if href else ''
+        copied = html.escape(title_text)
+        tools = ('<div class="card-tools">'
+                 f'<button type="button" class="copy-title" '
+                 f'data-copy="{copied}" title="复制标题">'
+                 '📋 复制标题</button></div>')
+        if href:
+            # 整张卡片可点击，避免用户点标题以外的区域没有反应
+            return (f'<a class="card card-link" href="{html.escape(href)}" '
+                    f'target="_blank" rel="noopener noreferrer">'
+                    f'<div class="card-title">{html.escape(title_text)}</div>'
+                    f'{des}{meta}<div class="card-meta">点击打开</div></a>{tools}')
         return (f'<div class="card"><div class="card-title">'
-                f'{linkify(title_text)}</div>{des}{meta}</div>')
+                f'{linkify(title_text)}</div>{des}{meta}</div>{tools}')
     if kind == 'sticker':
         src = m.get('media') or c.get('media') or ''
         uri = uri_fn(src) if src else ''
@@ -862,10 +888,56 @@ def _rich_body(m, uri_fn=None):
                 'chat_history': '💬', 'transfer': '💰', 'redpacket': '🧧',
                 'kf_template': '📢', 'app': '📦', 'card': '👤',
                 'announcement': '📢'}.get(kind, '📦')
-        des = f'<div class="card-des">{linkify(c.get("des", ""))}</div>' if c.get('des') else ''
-        app = f'<div class="card-meta">{html.escape(c.get("app", ""))}</div>' if c.get('app') else ''
-        return (f'<div class="card"><div class="card-title">{icon} '
-                f'{html.escape(c.get("title") or m.get("text", ""))}</div>{des}{app}</div>')
+        title_text = c.get('title') or m.get('text', '')
+        des = (f'<div class="card-des">{html.escape(c.get("des", ""))}</div>'
+               if c.get('des') else '')
+        app = (f'<div class="card-meta">{html.escape(c.get("app", ""))}</div>'
+               if c.get('app') else '')
+        inner = (f'<div class="card-title">{icon} {html.escape(title_text)}</div>'
+                 f'{des}{app}')
+        # 视频分享（B 站/抖音等）、小程序、音乐、客服卡片都带 url，
+        # 整张卡片做成链接，避免“其他平台分享链接点不动”
+        original = _safe_href(c.get('url'))
+        search = _safe_href(c.get('search_url'))
+        resolved = _safe_href(c.get('resolved_url'))
+        if not search and kind == 'video_share' and original and \
+                re.match(r'https?://(?:b23\.tv|[\w.-]*bilibili\.com)/',
+                         original, re.I):
+            search = _safe_href(links.search_url(title_text))
+        expired = bool(kind == 'video_share' and c.get('link_expired') and search)
+        href = ''
+        if kind in ('miniprogram', 'music', 'video_share', 'kf_template', 'app'):
+            href = search if expired else (resolved or original)
+        if expired:
+            status = ('<div class="card-meta warn">原短链已失效 · '
+                      '点击按标题搜索</div>')
+        elif resolved:
+            status = '<div class="card-meta">已解析为视频直链 · 点击打开</div>'
+        elif href:
+            status = '<div class="card-meta">点击打开</div>'
+        else:
+            status = ''
+        tools = ''
+        if kind in ('video_share', 'link') and title_text:
+            copied = html.escape(title_text)
+            tools = ('<div class="card-tools">'
+                     f'<button type="button" class="copy-title" '
+                     f'data-copy="{copied}" title="复制标题">'
+                     '📋 复制标题</button>')
+            if search:
+                tools += (f'<a class="link-fallback" href="{html.escape(search)}" '
+                          f'target="_blank" rel="noopener noreferrer">'
+                          '搜索标题</a>')
+            if expired and original:
+                tools += (f'<a class="link-fallback" href="{html.escape(original)}" '
+                          f'target="_blank" rel="noopener noreferrer">'
+                          '原短链</a>')
+            tools += '</div>'
+        if href:
+            return (f'<a class="card card-link" href="{html.escape(href)}" '
+                    f'target="_blank" rel="noopener noreferrer">{inner}'
+                    f'{status}</a>{tools}')
+        return f'<div class="card">{inner}</div>{tools}'
     return linkify(m.get('text', ''))
 
 
